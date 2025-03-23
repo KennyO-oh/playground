@@ -1,0 +1,535 @@
+<div id="glowscript" class="glowscript">
+<meta http-equiv="Content-Type" content="text/html; charset=utf-8">
+<link type="text/css" href="https://www.glowscript.org/css/redmond/2.1/jquery-ui.custom.css" rel="stylesheet" />
+<link type="text/css" href="https://www.glowscript.org/css/ide.css" rel="stylesheet" />
+<script type="text/javascript" src="https://www.glowscript.org/lib/jquery/2.1/jquery.min.js"></script>
+<script type="text/javascript" src="https://www.glowscript.org/lib/jquery/2.1/jquery-ui.custom.min.js"></script>
+<script type="text/javascript" src="https://www.glowscript.org/package/glow.3.2.min.js"></script>
+<script type="text/javascript" src="https://www.glowscript.org/package/RSrun.3.2.min.js"></script>
+<script type="text/javascript"><!--//--><![CDATA[//><!--
+
+// START JAVASCRIPT
+;(function() {;
+var ρσ_modules = {};
+var pivots, support, support_width, left_front_leg, left_back_leg, right_front_leg, right_back_leg, active_count, side, collision_triggered, transfer_speed;
+ρσ_modules.pythonize = {};
+
+(function(){
+    function strings() {
+        var string_funcs, exclude, name;
+        string_funcs = set("capitalize strip lstrip rstrip islower isupper isspace lower upper swapcase center count endswith startswith find rfind index rindex format join ljust rjust partition rpartition replace split rsplit splitlines zfill".split(" "));
+        if (!arguments.length) {
+            exclude = (function(){
+                var s = ρσ_set();
+                s.jsset.add("split");
+                s.jsset.add("replace");
+                return s;
+            })();
+        } else if (arguments[0]) {
+            exclude = Array.prototype.slice.call(arguments);
+        } else {
+            exclude = null;
+        }
+        if (exclude) {
+            string_funcs = string_funcs.difference(set(exclude));
+        }
+        var ρσ_Iter0 = string_funcs;
+        ρσ_Iter0 = ((typeof ρσ_Iter0[Symbol.iterator] === "function") ? (ρσ_Iter0 instanceof Map ? ρσ_Iter0.keys() : ρσ_Iter0) : Object.keys(ρσ_Iter0));
+        for (var ρσ_Index0 of ρσ_Iter0) {
+            name = ρσ_Index0;
+            (ρσ_expr_temp = String.prototype)[(typeof name === "number" && name < 0) ? ρσ_expr_temp.length + name : name] = (ρσ_expr_temp = ρσ_str.prototype)[(typeof name === "number" && name < 0) ? ρσ_expr_temp.length + name : name];
+        }
+    };
+    if (!strings.__module__) Object.defineProperties(strings, {
+        __module__ : {value: "pythonize"}
+    });
+
+    ρσ_modules.pythonize.strings = strings;
+})();
+async function __main__() {
+"use strict";
+    var display = canvas;
+    var scene = canvas();
+
+    function round(num, n=0) {return Number(num.toFixed(n))}
+
+    var version, print, arange, __name__, type, ρσ_ls, num_balls, ball_radius, ball_spacing, string_length, g, dt, initial_angle, v0, transfer_speed, ball_z_offset, leg_length, leg_spread, leg_bottom_spread, leg_z_offset, leg_radius, damping, restitution, active_count, side, collision_triggered, scene_center_y, balls, strings, pivots, support, left_front_leg, left_back_leg, right_front_leg, right_back_leg, pivot, ball_pos, b, s, i, angles, angular_velocities;
+    version = ρσ_list_decorate([ "3.2", "glowscript" ]);
+    Array.prototype['+'] = function(r) {return this.concat(r)}
+    Array.prototype['*'] = function(r) {return __array_times_number(this, r)}
+    window.__GSlang = "vpython";
+    print = GSprint;
+    arange = range;
+    __name__ = "__main__";
+    type = pytype;
+    var strings = ρσ_modules.pythonize.strings;
+
+    strings();
+    "3";
+    num_balls = 7;
+    "4";
+    ball_radius = .5;
+    "5";
+    ball_spacing = 2["*"](ball_radius)["*"](1.05);
+    "6";
+    string_length = 5;
+    "7";
+    g = 9.8;
+    "8";
+    dt = .005;
+    "9";
+    initial_angle = 1;
+    "10";
+    v0 = Math.pow((2["*"](g)["*"](string_length)["*"](1["-"](1["*"](cos(initial_angle))))), .5)["/"](string_length);
+    "11";
+    transfer_speed = v0;
+    "12";
+    ball_z_offset = 1["-u"]()["*"](.2);
+    "14";
+    leg_length = 6;
+    "15";
+    leg_spread = .5;
+    "16";
+    leg_bottom_spread = 2;
+    "17";
+    leg_z_offset = .1;
+    "18";
+    leg_radius = .1;
+    "20";
+    damping = .01;
+    "21";
+    restitution = .96;
+    "23";
+    active_count = 1;
+    "24";
+    side = "left";
+    "25";
+    collision_triggered = false;
+    "27";
+    async function make_metallic(obj) {
+        "28";
+        obj.color = vec(.8, .8, .8);
+        "29";
+        obj.specular = vec(1, 1, 1);
+        "30";
+        obj.shininess = .8;
+    };
+    if (!make_metallic.__argnames__) Object.defineProperties(make_metallic, {
+        __argnames__ : {value: ["obj"]},
+        __module__ : {value: null}
+    });
+
+    "32";
+    scene_center_y = string_length["+"](string_length["-"](1["*"](leg_length)))["/"](2);
+    "33";
+    scene.title = "Your Virtual Newton's Cradle";
+    "34";
+    scene.width = 1280;
+    "35";
+    scene.height = 720;
+    "36";
+    scene.background = color.black;
+    "37";
+    scene.center = vec(0, scene_center_y, 0);
+    (await sleep(.1));
+    "38";
+    scene.autoscale = false;
+    "39";
+    scene.range = 6;
+    "41";
+    balls = ρσ_list_decorate([]);
+    "42";
+    strings = ρσ_list_decorate([]);
+    "43";
+    pivots = ρσ_list_decorate([]);
+    "45";
+    support = ρσ_interpolate_kwargs.call(this, box, [ρσ_desugar_kwargs({pos: vec(0, string_length, 0), size: vec(1, .2, .2)})]);
+    "46";
+    (await make_metallic(support));
+    "48";
+    left_front_leg = null;
+    "49";
+    left_back_leg = null;
+    "50";
+    right_front_leg = null;
+    "51";
+    right_back_leg = null;
+    "53";
+    async function update_pivots() {
+        var ρσ_ls, x, i;
+        "54";
+        "55";
+        pivots = ρσ_list_decorate([]);
+        "56";
+        for (var ρσ_Index1 = 0; ρσ_Index1["<"](num_balls); ρσ_Index1++) {
+            i = ρσ_Index1;
+            "57";
+            x = i["-"](1["*"](num_balls["-"](1["*"](1)))["/"](2))["*"](ball_spacing);
+            "58";
+            pivots.append(vec(x, string_length, 0));
+        }
+        "59";
+        support_width = num_balls["*"](ball_spacing)["+"](1);
+        "60";
+        support.pos = vec(0, string_length, 0);
+        "61";
+        support.size = vec(support_width, .2, .2);
+        "62";
+        (await make_metallic(support));
+        "63";
+        (await update_legs());
+    };
+    if (!update_pivots.__module__) Object.defineProperties(update_pivots, {
+        __module__ : {value: null}
+    });
+
+    "65";
+    async function update_legs() {
+        var ρσ_ls, left_top, right_top, left_top_front, left_top_back, right_top_front, right_top_back, left_bottom, right_bottom, left_bottom_front, left_bottom_back, right_bottom_front, right_bottom_back;
+        "66";
+        "67";
+        left_top = vec(1["-u"]()["*"](support_width)["/"](2), string_length, 0);
+        "68";
+        right_top = vec(support_width["/"](2), string_length, 0);
+        "69";
+        left_top_front = left_top["+"](vec(0, 0, leg_z_offset));
+        "70";
+        left_top_back = left_top["+"](vec(0, 0, 1["-u"]()["*"](leg_z_offset)));
+        "71";
+        right_top_front = right_top["+"](vec(0, 0, leg_z_offset));
+        "72";
+        right_top_back = right_top["+"](vec(0, 0, 1["-u"]()["*"](leg_z_offset)));
+        "73";
+        left_bottom = vec(left_top.x["-"](1["*"](leg_spread)), string_length["-"](1["*"](leg_length)), 0);
+        "74";
+        right_bottom = vec(right_top.x["+"](leg_spread), string_length["-"](1["*"](leg_length)), 0);
+        "75";
+        left_bottom_front = left_bottom["+"](vec(0, 0, leg_bottom_spread));
+        "76";
+        left_bottom_back = left_bottom["+"](vec(0, 0, 1["-u"]()["*"](leg_bottom_spread)));
+        "77";
+        right_bottom_front = right_bottom["+"](vec(0, 0, leg_bottom_spread));
+        "78";
+        right_bottom_back = right_bottom["+"](vec(0, 0, 1["-u"]()["*"](leg_bottom_spread)));
+        "80";
+        if (left_front_leg) {
+            "81";
+            left_front_leg.pos = left_top_front;
+            "82";
+            left_front_leg.axis = left_bottom_front["-"](1["*"](left_top_front));
+            "83";
+        } else {
+            "84";
+            left_front_leg = ρσ_interpolate_kwargs.call(this, cylinder, [ρσ_desugar_kwargs({pos: left_top_front, axis: left_bottom_front["-"](1["*"](left_top_front)), radius: leg_radius})]);
+            "85";
+            (await make_metallic(left_front_leg));
+            "86";
+        }
+        if (left_back_leg) {
+            "87";
+            left_back_leg.pos = left_top_back;
+            "88";
+            left_back_leg.axis = left_bottom_back["-"](1["*"](left_top_back));
+            "89";
+        } else {
+            "90";
+            left_back_leg = ρσ_interpolate_kwargs.call(this, cylinder, [ρσ_desugar_kwargs({pos: left_top_back, axis: left_bottom_back["-"](1["*"](left_top_back)), radius: leg_radius})]);
+            "91";
+            (await make_metallic(left_back_leg));
+            "92";
+        }
+        if (right_front_leg) {
+            "93";
+            right_front_leg.pos = right_top_front;
+            "94";
+            right_front_leg.axis = right_bottom_front["-"](1["*"](right_top_front));
+            "95";
+        } else {
+            "96";
+            right_front_leg = ρσ_interpolate_kwargs.call(this, cylinder, [ρσ_desugar_kwargs({pos: right_top_front, axis: right_bottom_front["-"](1["*"](right_top_front)), radius: leg_radius})]);
+            "97";
+            (await make_metallic(right_front_leg));
+            "98";
+        }
+        if (right_back_leg) {
+            "99";
+            right_back_leg.pos = right_top_back;
+            "100";
+            right_back_leg.axis = right_bottom_back["-"](1["*"](right_top_back));
+            "101";
+        } else {
+            "102";
+            right_back_leg = ρσ_interpolate_kwargs.call(this, cylinder, [ρσ_desugar_kwargs({pos: right_top_back, axis: right_bottom_back["-"](1["*"](right_top_back)), radius: leg_radius})]);
+            "103";
+            (await make_metallic(right_back_leg));
+        }
+    };
+    if (!update_legs.__module__) Object.defineProperties(update_legs, {
+        __module__ : {value: null}
+    });
+
+    "105";
+    (await update_pivots());
+    "107";
+    for (var ρσ_Index2 = 0; ρσ_Index2["<"](num_balls); ρσ_Index2++) {
+        i = ρσ_Index2;
+        "108";
+        pivot = ρσ_getitem(pivots, i);
+        "109";
+        ball_pos = pivot["+"](vec(0, 1["-u"]()["*"](string_length), ball_z_offset));
+        "110";
+        b = ρσ_interpolate_kwargs.call(this, sphere, [ρσ_desugar_kwargs({pos: ball_pos, radius: ball_radius})]);
+        "111";
+        (await make_metallic(b));
+        "112";
+        balls.append(b);
+        "113";
+        s = ρσ_interpolate_kwargs.call(this, cylinder, [ρσ_desugar_kwargs({pos: pivot, axis: b.pos["-"](1["*"](pivot)), radius: .03})]);
+        "114";
+        (await make_metallic(s));
+        "115";
+        strings.append(s);
+    }
+    "117";
+    angles = ρσ_list_decorate([ 0 ])["*"](num_balls);
+    "118";
+    angular_velocities = ρσ_list_decorate([ 0 ])["*"](num_balls);
+    "120";
+    async function reset_simulation(n) {
+        var ρσ_ls, i;
+        "121";
+        "122";
+        active_count = n;
+        "123";
+        side = "left";
+        "124";
+        collision_triggered = false;
+        "125";
+        transfer_speed = v0;
+        "126";
+        (await update_pivots());
+        "127";
+        for (var ρσ_Index3 = 0; ρσ_Index3["<"](num_balls); ρσ_Index3++) {
+            i = ρσ_Index3;
+            "128";
+            ρσ_setitem(angles, i, 0);
+            "129";
+            ρσ_setitem(angular_velocities, i, 0);
+            "130";
+            ρσ_getitem(balls, i).pos = ρσ_getitem(pivots, i)["+"](vec(0, 1["-u"]()["*"](string_length), ball_z_offset));
+            "131";
+            ρσ_getitem(strings, i).pos = ρσ_getitem(pivots, i);
+            "132";
+            ρσ_getitem(strings, i).axis = ρσ_getitem(balls, i).pos["-"](1["*"](ρσ_getitem(pivots, i)));
+        }
+        "133";
+        for (var ρσ_Index4 = 0; ρσ_Index4["<"](active_count); ρσ_Index4++) {
+            i = ρσ_Index4;
+            "134";
+            ρσ_setitem(angles, i, 1["-u"]()["*"](initial_angle));
+            "135";
+            ρσ_setitem(angular_velocities, i, 0);
+            "136";
+            ρσ_getitem(balls, i).pos = ρσ_getitem(pivots, i)["+"](vec(string_length["*"](sin(ρσ_getitem(angles, i))), 1["-u"]()["*"](string_length)["*"](cos(ρσ_getitem(angles, i))), ball_z_offset));
+            "137";
+            ρσ_getitem(strings, i).axis = ρσ_getitem(balls, i).pos["-"](1["*"](ρσ_getitem(pivots, i)));
+        }
+    };
+    if (!reset_simulation.__argnames__) Object.defineProperties(reset_simulation, {
+        __argnames__ : {value: ["n"]},
+        __module__ : {value: null}
+    });
+
+    "139";
+    async function set_one(evt) {
+        (await reset_simulation(1));
+    };
+    if (!set_one.__argnames__) Object.defineProperties(set_one, {
+        __argnames__ : {value: ["evt"]},
+        __module__ : {value: null}
+    });
+
+    "140";
+    async function set_two(evt) {
+        (await reset_simulation(2));
+    };
+    if (!set_two.__argnames__) Object.defineProperties(set_two, {
+        __argnames__ : {value: ["evt"]},
+        __module__ : {value: null}
+    });
+
+    "141";
+    async function set_three(evt) {
+        (await reset_simulation(3));
+    };
+    if (!set_three.__argnames__) Object.defineProperties(set_three, {
+        __argnames__ : {value: ["evt"]},
+        __module__ : {value: null}
+    });
+
+    "142";
+    async function set_four(evt) {
+        (await reset_simulation(4));
+    };
+    if (!set_four.__argnames__) Object.defineProperties(set_four, {
+        __argnames__ : {value: ["evt"]},
+        __module__ : {value: null}
+    });
+
+    "144";
+    ρσ_interpolate_kwargs.call(this, button, [ρσ_desugar_kwargs({text: "1 Ball", bind: set_one})]);
+    "145";
+    scene.append_to_caption("  ");
+    "146";
+    ρσ_interpolate_kwargs.call(this, button, [ρσ_desugar_kwargs({text: "2 Balls", bind: set_two})]);
+    "147";
+    scene.append_to_caption("  ");
+    "148";
+    ρσ_interpolate_kwargs.call(this, button, [ρσ_desugar_kwargs({text: "3 Balls", bind: set_three})]);
+    "149";
+    scene.append_to_caption("  ");
+    "150";
+    ρσ_interpolate_kwargs.call(this, button, [ρσ_desugar_kwargs({text: "4 Balls", bind: set_four})]);
+    "151";
+    scene.append_to_caption("\n\n");
+    "153";
+    async function update_sim() {
+        var ρσ_ls, a, i;
+        "154";
+        "155";
+        if ((side === "left" || typeof side === "object" && ρσ_equals(side, "left"))) {
+            "156";
+            for (var ρσ_Index5 = 0; ρσ_Index5["<"](active_count); ρσ_Index5++) {
+                i = ρσ_Index5;
+                "157";
+                a = 1["-u"]()["*"](g["/"](string_length))["*"](sin(ρσ_getitem(angles, i)));
+                "158";
+                ρσ_setitem(angular_velocities, i, ρσ_getitem(angular_velocities, i)["+"](a["*"](dt)));
+                "159";
+                ρσ_setitem(angular_velocities, i, ρσ_getitem(angular_velocities, i)["*"](1)["-"](1["*"](damping)["*"](dt)));
+                "160";
+                ρσ_setitem(angles, i, ρσ_getitem(angles, i)["+"](ρσ_getitem(angular_velocities, i)["*"](dt)));
+                "161";
+                ρσ_getitem(balls, i).pos = ρσ_getitem(pivots, i)["+"](vec(string_length["*"](sin(ρσ_getitem(angles, i))), 1["-u"]()["*"](string_length)["*"](cos(ρσ_getitem(angles, i))), ball_z_offset));
+                "164";
+                ρσ_getitem(strings, i).axis = ρσ_getitem(balls, i).pos["-"](1["*"](ρσ_getitem(pivots, i)));
+                "165";
+            }
+            if (!collision_triggered && abs(ρσ_getitem(angles, active_count["-"](1["*"](1))))["<"](.02) && ρσ_getitem(angular_velocities, active_count["-"](1["*"](1)))[">"](0)) {
+                "166";
+                for (var ρσ_Index6 = 0; ρσ_Index6["<"](active_count); ρσ_Index6++) {
+                    i = ρσ_Index6;
+                    "167";
+                    ρσ_setitem(angles, i, 0);
+                    "168";
+                    ρσ_setitem(angular_velocities, i, 0);
+                }
+                "169";
+                for (var ρσ_Index7 = num_balls["-"](1["*"](active_count)); ρσ_Index7["<"](num_balls); ρσ_Index7++) {
+                    i = ρσ_Index7;
+                    "170";
+                    ρσ_setitem(angles, i, 0);
+                    "171";
+                    ρσ_setitem(angular_velocities, i, transfer_speed);
+                }
+                "172";
+                transfer_speed=transfer_speed["*"](restitution);
+                "173";
+                side = "right";
+                "174";
+                collision_triggered = true;
+                "175";
+            }
+        } else if ((side === "right" || typeof side === "object" && ρσ_equals(side, "right"))) {
+            "176";
+            for (var ρσ_Index8 = num_balls["-"](1["*"](active_count)); ρσ_Index8["<"](num_balls); ρσ_Index8++) {
+                i = ρσ_Index8;
+                "177";
+                a = 1["-u"]()["*"](g["/"](string_length))["*"](sin(ρσ_getitem(angles, i)));
+                "178";
+                ρσ_setitem(angular_velocities, i, ρσ_getitem(angular_velocities, i)["+"](a["*"](dt)));
+                "179";
+                ρσ_setitem(angular_velocities, i, ρσ_getitem(angular_velocities, i)["*"](1)["-"](1["*"](damping)["*"](dt)));
+                "180";
+                ρσ_setitem(angles, i, ρσ_getitem(angles, i)["+"](ρσ_getitem(angular_velocities, i)["*"](dt)));
+                "181";
+                ρσ_getitem(balls, i).pos = ρσ_getitem(pivots, i)["+"](vec(string_length["*"](sin(ρσ_getitem(angles, i))), 1["-u"]()["*"](string_length)["*"](cos(ρσ_getitem(angles, i))), ball_z_offset));
+                "184";
+                ρσ_getitem(strings, i).axis = ρσ_getitem(balls, i).pos["-"](1["*"](ρσ_getitem(pivots, i)));
+                "185";
+            }
+            if (!collision_triggered && abs(ρσ_getitem(angles, num_balls["-"](1["*"](active_count))))["<"](.02) && ρσ_getitem(angular_velocities, num_balls["-"](1["*"](active_count)))["<"](0)) {
+                "186";
+                for (var ρσ_Index9 = num_balls["-"](1["*"](active_count)); ρσ_Index9["<"](num_balls); ρσ_Index9++) {
+                    i = ρσ_Index9;
+                    "187";
+                    ρσ_setitem(angles, i, 0);
+                    "188";
+                    ρσ_setitem(angular_velocities, i, 0);
+                }
+                "189";
+                for (var ρσ_Index10 = 0; ρσ_Index10["<"](active_count); ρσ_Index10++) {
+                    i = ρσ_Index10;
+                    "190";
+                    ρσ_setitem(angles, i, 0);
+                    "191";
+                    ρσ_setitem(angular_velocities, i, 1["-u"]()["*"](transfer_speed));
+                }
+                "192";
+                transfer_speed=transfer_speed["*"](restitution);
+                "193";
+                side = "left";
+                "194";
+                collision_triggered = true;
+            }
+        }
+        "195";
+        for (var ρσ_Index11 = 0; ρσ_Index11["<"](num_balls); ρσ_Index11++) {
+            i = ρσ_Index11;
+            "196";
+            if ((side === "left" || typeof side === "object" && ρσ_equals(side, "left")) && i["<"](active_count) || (side === "right" || typeof side === "object" && ρσ_equals(side, "right")) && i[">="](num_balls["-"](1["*"](active_count)))) {
+                "197";
+                continue;
+            }
+            "198";
+            ρσ_setitem(angles, i, 0);
+            "199";
+            ρσ_setitem(angular_velocities, i, 0);
+            "200";
+            ρσ_getitem(balls, i).pos = ρσ_getitem(pivots, i)["+"](vec(0, 1["-u"]()["*"](string_length), ball_z_offset));
+            "201";
+            ρσ_getitem(strings, i).axis = ρσ_getitem(balls, i).pos["-"](1["*"](ρσ_getitem(pivots, i)));
+            "202";
+        }
+        if ((side === "left" || typeof side === "object" && ρσ_equals(side, "left")) && abs(ρσ_getitem(angles, active_count["-"](1["*"](1))))[">"](.05)) {
+            "203";
+            collision_triggered = false;
+            "204";
+        } else if ((side === "right" || typeof side === "object" && ρσ_equals(side, "right")) && abs(ρσ_getitem(angles, num_balls["-"](1["*"](active_count))))[">"](.05)) {
+            "205";
+            collision_triggered = false;
+        }
+    };
+    if (!update_sim.__module__) Object.defineProperties(update_sim, {
+        __module__ : {value: null}
+    });
+
+    "207";
+    (await reset_simulation(1));
+    "208";
+    while (true) {
+        "209";
+        (await rate(200));
+        "210";
+        (await update_sim());
+    }
+};
+if (!__main__.__module__) Object.defineProperties(__main__, {
+    __module__ : {value: null}
+});
+
+;$(function(){ window.__context = { glowscript_container: $("#glowscript").removeAttr("id") }; __main__() })})()
+// END JAVASCRIPT
+
+//--><!]]></script>
+</div>
