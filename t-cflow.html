@@ -1,0 +1,366 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Laminar Couette Flow Simulation</title>
+  
+  <!-- Basic CSS Styling for the simulation and overlays -->
+  <style>
+    body { margin: 0; overflow: hidden; }
+    canvas { display: block; }
+    /* Top-left overlay for simulation information */
+    #info {
+      position: absolute;
+      top: 10px;
+      left: 10px;
+      background: rgba(0, 0, 0, 0.5);
+      padding: 10px;
+      border-radius: 8px;
+      font-family: Arial, sans-serif;
+      color: white;
+    }
+    #info h1 { 
+      margin: 0 0 5px 0; 
+      font-size: 2.4em;  
+      color: #ffcc00;
+    }
+    #info p { 
+      margin: 2px 0; 
+      font-size: 1.8em;  
+      color: white;
+    }
+    /* Bottom-center overlay for view instructions */
+    #instructions {
+      position: absolute;
+      bottom: 10px;
+      left: 50%;
+      transform: translateX(-50%);
+      background: rgba(0,0,0,0.5);
+      padding: 10px;
+      border-radius: 8px;
+      font-family: Arial, sans-serif;
+      font-size: 1.8em;
+      color: white;
+    }
+  </style>
+  
+  <!-- Load es-module-shims for import map support -->
+  <script async src="https://unpkg.com/es-module-shims@1.8.0/dist/es-module-shims.js"></script>
+  
+  <!-- Import map for external dependencies -->
+  <script type="importmap">
+    {
+      "imports": {
+        "three": "https://unpkg.com/three@0.160.0/build/three.module.js",
+        "three/addons/": "https://unpkg.com/three@0.160.0/examples/jsm/"
+      }
+    }
+  </script>
+</head>
+<body>
+  <!-- Overlay displaying simulation parameters and real-time data -->
+  <div id="info">
+    <h1>Laminar Couette Flow Simulation</h1>
+    <p>Fluid: <span style="color: #ffcc00;">Clear Corn Syrup</span> (Viscosity: <span style="color: #ffcc00;">2500 cP</span>)</p>
+    <p>Inner Cylinder Rotation: <span id="rotationLabel" style="color: #99ff99;">0°</span></p>
+    <p>Effective Angular Speed: <span id="speedLabel" style="color: #ff99cc;">0 rad/s</span></p>
+    <p>Reynolds Number: <span id="reLabel" style="color: #ffcc00;">0</span></p>
+  </div>
+  <!-- Overlay for view instructions -->
+  <div id="instructions">(Click and drag to rotate view, double-click to reset view)</div>
+  
+  <script type="module">
+    // Import necessary modules from the import map.
+    import * as THREE from 'three';
+    import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+    
+    /* ============================================================
+       Simulation Parameters
+       ============================================================
+    */
+    const R1 = 1;                   // Inner cylinder radius.
+    const R2 = 2;                   // Outer cylinder radius.
+    const innerAngularSpeed = 0.5;  // Base angular speed (rad/s) for inner cylinder.
+    const viscosity = 2500;         // Dynamic viscosity in cP.
+    // Convert viscosity: 2500 cP = 2.5 Pa·s.
+    const mu = 2.5;
+    // Assume density for corn syrup ~1370 kg/m³.
+    const density = 1370;
+    // Calculate kinematic viscosity (nu) in m²/s.
+    const nu = mu / density;
+    
+    // Couette flow profile: v(r) = A * r + B / r.
+    // Boundary conditions: v(R1) = effectiveSpeed * R1, v(R2) = 0.
+    // (A and B are computed dynamically in the animation loop.)
+    
+    // Define particle depth zones with specific start angles and colors.
+    const depths = [
+      {
+        range: [-0.5, -0.1667],
+        startAngle: 3 * Math.PI / 3, // 180° offset.
+        color: new THREE.Color(0xff8000)  // Bright orange.
+      },
+      {
+        range: [-0.1667, 0.1667],
+        startAngle: 4 * Math.PI / 3, // 240° offset.
+        color: new THREE.Color(0x00ffff)  // Bright cyan.
+      },
+      {
+        range: [0.1667, 0.5],
+        startAngle: 5 * Math.PI / 3, // 300° offset.
+        color: new THREE.Color(0xff00ff)  // Bright magenta.
+      }
+    ];
+    
+    /* ============================================================
+       Scene, Camera, and Renderer Setup
+       ============================================================
+    */
+    const scene = new THREE.Scene();
+    const camera = new THREE.PerspectiveCamera(45, window.innerWidth/window.innerHeight, 0.1, 100);
+    camera.position.set(0, -5, 5);
+    camera.lookAt(0, 0, 0);
+    
+    const renderer = new THREE.WebGLRenderer({ antialias: true });
+    renderer.setSize(window.innerWidth, window.innerHeight);
+    renderer.setPixelRatio(window.devicePixelRatio);
+    document.body.appendChild(renderer.domElement);
+    
+    /* ============================================================
+       OrbitControls for User Interactivity
+       ============================================================
+    */
+    const controls = new OrbitControls(camera, renderer.domElement);
+    controls.enableDamping = true;
+    controls.dampingFactor = 0.1;
+    // Reset view on double-click.
+    renderer.domElement.addEventListener('dblclick', () => {
+      controls.reset();
+    });
+    
+    /* ============================================================
+       Particle System Setup
+       ============================================================
+    */
+    const particleCount = 600000;
+    const positions = new Float32Array(particleCount * 3);
+    const colors = new Float32Array(particleCount * 3);
+    // Array to store additional data for each particle.
+    const particleData = [];
+    const arcWidth = 0.2; // Initial angular spread for particles.
+    
+    /**
+     * Return the uniform color for a particle based on its depth zone.
+     * @param {Object} p - Particle data object.
+     * @returns {THREE.Color} The color for the particle.
+     */
+    function computeParticleColor(p) {
+      return depths[p.depthIndex].color;
+    }
+    
+    // Initialize particle positions, colors, and additional data.
+    for (let i = 0; i < particleCount; i++) {
+      const r = R1 + (R2 - R1) * Math.random();
+      const z = -0.5 + Math.random();
+      let depthIndex;
+      if (z < -0.1667) {
+        depthIndex = 0;
+      } else if (z < 0.1667) {
+        depthIndex = 1;
+      } else {
+        depthIndex = 2;
+      }
+      const baseAngle = depths[depthIndex].startAngle;
+      const theta = baseAngle + (Math.random() - 0.5) * arcWidth;
+      particleData.push({ r, theta, z, depthIndex });
+      
+      positions[3 * i]     = r * Math.cos(theta);
+      positions[3 * i + 1] = r * Math.sin(theta);
+      positions[3 * i + 2] = z;
+      
+      const col = computeParticleColor({ r, theta, depthIndex });
+      colors[3 * i]     = col.r;
+      colors[3 * i + 1] = col.g;
+      colors[3 * i + 2] = col.b;
+    }
+    
+    const particleGeometry = new THREE.BufferGeometry();
+    particleGeometry.setAttribute('position', new THREE.BufferAttribute(positions, 3));
+    particleGeometry.setAttribute('color', new THREE.BufferAttribute(colors, 3));
+    const particleMaterial = new THREE.PointsMaterial({ vertexColors: true, size: 0.05 });
+    const particles = new THREE.Points(particleGeometry, particleMaterial);
+    scene.add(particles);
+    
+    /* ============================================================
+       Inner Cylinder Setup
+       ============================================================
+    */
+    const innerCylinderGeometry = new THREE.CylinderGeometry(R1, R1, 1, 32, 1, true);
+    const innerCylinderMaterial = new THREE.MeshBasicMaterial({ color: 0x0000ff });
+    const innerCylinderMesh = new THREE.Mesh(innerCylinderGeometry, innerCylinderMaterial);
+    innerCylinderMesh.rotation.x = Math.PI / 2;
+    const innerCylinderGroup = new THREE.Group();
+    innerCylinderGroup.add(innerCylinderMesh);
+    
+    // Add a top face (black disc) to the inner cylinder.
+    const topFaceGeometry = new THREE.CircleGeometry(R1, 128);
+    const topFaceMaterial = new THREE.MeshBasicMaterial({ color: 0x000000, side: THREE.DoubleSide });
+    const topFaceMesh = new THREE.Mesh(topFaceGeometry, topFaceMaterial);
+    topFaceMesh.position.z = 0.5;
+    innerCylinderGroup.add(topFaceMesh);
+    
+    // Add wireframe detail to the top face.
+    const innerEdgeMaterial = new THREE.LineBasicMaterial({ color: 0x0000ff });
+    const topEdgePoints = [];
+    const topEdgeSegments = 128;
+    for (let i = 0; i <= topEdgeSegments; i++) {
+      let theta = (i / topEdgeSegments) * 2 * Math.PI;
+      topEdgePoints.push(new THREE.Vector3(R1 * Math.cos(theta), R1 * Math.sin(theta), 0.5));
+    }
+    const topEdgeGeometry = new THREE.BufferGeometry().setFromPoints(topEdgePoints);
+    const innerTopEdge = new THREE.LineLoop(topEdgeGeometry, innerEdgeMaterial);
+    innerCylinderGroup.add(innerTopEdge);
+    
+    // Add four radial lines on the top face.
+    const radialAngles = [0, Math.PI/4, Math.PI/2, (3*Math.PI)/4];
+    radialAngles.forEach(theta => {
+      const start = new THREE.Vector3(R1 * Math.cos(theta), R1 * Math.sin(theta), 0.5);
+      const end   = new THREE.Vector3(-R1 * Math.cos(theta), -R1 * Math.sin(theta), 0.5);
+      const radialGeometry = new THREE.BufferGeometry().setFromPoints([start, end]);
+      const radialLine = new THREE.Line(radialGeometry, innerEdgeMaterial);
+      innerCylinderGroup.add(radialLine);
+    });
+    scene.add(innerCylinderGroup);
+    
+    /* ============================================================
+       Outer Cylinder Setup
+       ============================================================
+    */
+    const outerCylinderGeometry = new THREE.CylinderGeometry(R2, R2, 1, 32, 1, true);
+    const outerCylinderMaterial = new THREE.MeshBasicMaterial({
+      color: 0x00ff00,
+      opacity: 0.3,
+      transparent: true,
+      wireframe: false
+    });
+    const outerCylinderMesh = new THREE.Mesh(outerCylinderGeometry, outerCylinderMaterial);
+    outerCylinderMesh.rotation.x = Math.PI / 2;
+    scene.add(outerCylinderMesh);
+    
+    // Add wireframe circles at the top and bottom edges of the outer cylinder.
+    const outerEdgeMaterial = new THREE.LineBasicMaterial({ color: 0x00ff00, opacity: 0.8, transparent: true });
+    const outerTopPoints = [];
+    const circleSegments = 64;
+    for (let i = 0; i <= circleSegments; i++) {
+      let theta = (i / circleSegments) * 2 * Math.PI;
+      outerTopPoints.push(new THREE.Vector3(R2 * Math.cos(theta), R2 * Math.sin(theta), 0.5));
+    }
+    const outerTopGeometry = new THREE.BufferGeometry().setFromPoints(outerTopPoints);
+    const outerTopEdge = new THREE.LineLoop(outerTopGeometry, outerEdgeMaterial);
+    scene.add(outerTopEdge);
+    
+    const outerBottomPoints = [];
+    for (let i = 0; i <= circleSegments; i++) {
+      let theta = (i / circleSegments) * 2 * Math.PI;
+      outerBottomPoints.push(new THREE.Vector3(R2 * Math.cos(theta), R2 * Math.sin(theta), -0.5));
+    }
+    const outerBottomGeometry = new THREE.BufferGeometry().setFromPoints(outerBottomPoints);
+    const outerBottomEdge = new THREE.LineLoop(outerBottomGeometry, outerEdgeMaterial);
+    scene.add(outerBottomEdge);
+    
+    /* ============================================================
+       Inner Cylinder Oscillatory Rotation Control
+       ============================================================
+       The inner cylinder oscillates smoothly between 0 and 7 full rotations
+       (14π radians) using a cosine oscillation:
+         totalRotation = (maxRotation/2) * (1 - cos(frequency * t))
+       Its effective angular speed (the derivative) is:
+         effectiveSpeed = (maxRotation/2) * frequency * sin(frequency * t)
+       The time accumulator is reset each cycle to maintain perfect periodicity.
+    */
+    const maxRotation = 14 * Math.PI; // 7 full rotations.
+    const timeCycle = (14 * Math.PI) / innerAngularSpeed; // Total time for one complete oscillation cycle.
+    const frequency = (2 * Math.PI) / timeCycle;  // f = 2π/T.
+    let timeAccumulator = 0;
+    
+    /* ============================================================
+       Animation Loop
+       ============================================================
+       Updates the inner cylinder rotation, the fluid velocity profile, the particle positions,
+       and the overlay text in real time.
+    */
+    let lastTime = performance.now();
+    /**
+     * The main animation loop.
+     * - Updates the time accumulator and computes the current phase of oscillation.
+     * - Calculates the inner cylinder's rotation (totalRotation) and effective angular speed.
+     * - Computes the instantaneous fluid velocity profile (via coefficients A_current and B_current)
+     *   and updates all particle positions accordingly.
+     * - Updates overlay labels with the current inner cylinder rotation, effective angular speed,
+     *   and Reynolds number.
+     * - Updates orbit controls and renders the scene.
+     */
+    function animate() {
+      requestAnimationFrame(animate);
+      const currentTime = performance.now();
+      const dt = (currentTime - lastTime) / 1000;
+      lastTime = currentTime;
+      
+      timeAccumulator += dt;
+      // Keep timeAccumulator within one oscillation period.
+      timeAccumulator %= timeCycle;
+      const t = timeAccumulator;
+      
+      // Compute inner cylinder rotation and effective angular speed.
+      const totalRotation = (maxRotation / 2) * (1 - Math.cos(frequency * t));
+      const effectiveSpeed = (maxRotation / 2) * frequency * Math.sin(frequency * t);
+      innerCylinderGroup.rotation.z = totalRotation;
+      
+      // Compute the fluid velocity profile based on effectiveSpeed.
+      const A_current = effectiveSpeed * (R1 * R1) / (R1 * R1 - R2 * R2);
+      const B_current = -A_current * (R2 * R2);
+      
+      // Update particle positions based on the velocity profile.
+      const posArray = particleGeometry.attributes.position.array;
+      const colorArray = particleGeometry.attributes.color.array;
+      for (let i = 0; i < particleCount; i++) {
+        let p = particleData[i];
+        const omega = A_current + B_current / (p.r * p.r);
+        p.theta += omega * dt;
+        posArray[3 * i]     = p.r * Math.cos(p.theta);
+        posArray[3 * i + 1] = p.r * Math.sin(p.theta);
+        // p.z remains unchanged.
+        const col = computeParticleColor(p);
+        colorArray[3 * i]     = col.r;
+        colorArray[3 * i + 1] = col.g;
+        colorArray[3 * i + 2] = col.b;
+      }
+      particleGeometry.attributes.position.needsUpdate = true;
+      particleGeometry.attributes.color.needsUpdate = true;
+      
+      // Update overlay text with real-time information.
+      document.getElementById("rotationLabel").innerText = (totalRotation * 180 / Math.PI).toFixed(1) + "°";
+      document.getElementById("speedLabel").innerText = effectiveSpeed.toFixed(3) + " rad/s";
+      // Reynolds number: Re = effectiveSpeed / nu (with R1=1 and R2-R1=1).
+      const Re = effectiveSpeed / nu;
+      document.getElementById("reLabel").innerText = Re.toFixed(0);
+      
+      controls.update();
+      renderer.render(scene, camera);
+    }
+    animate();
+    
+    /* ============================================================
+       Window Resize Handler
+       ============================================================
+       Adjusts the camera and renderer dimensions when the window is resized.
+    */
+    window.addEventListener('resize', () => {
+      camera.aspect = window.innerWidth / window.innerHeight;
+      camera.updateProjectionMatrix();
+      renderer.setSize(window.innerWidth, window.innerHeight);
+    });
+  </script>
+</body>
+</html>

@@ -1,0 +1,611 @@
+<!DOCTYPE html>
+<html>
+  <head>
+    <meta charset="utf-8">
+    <title>3D Vomit Comet Simulation</title>
+    <!-- Import map for ES modules -->
+    <script type="importmap">
+    {
+      "imports": {
+        "three": "https://unpkg.com/three@0.128.0/build/three.module.js"
+      }
+    }
+    </script>
+    <style>
+      body { margin: 0; overflow: hidden; }
+      canvas { display: block; }
+      
+      /* Fixed simulation info display (upper right, vertical list) */
+      #infoText {
+        position: absolute;
+        top: 50px;
+        right: 100px;
+        background: rgba(0, 0, 0, 0.5);
+        color: #fff;
+        padding: 10px;
+        font-family: "trebuchet ms", sans-serif;
+        font-size: 24px;
+        white-space: nowrap;
+      }
+      
+      /* Phase name display (bottom center) */
+      #phaseName {
+        position: absolute;
+        bottom: 50px;
+        left: 50%;
+        transform: translateX(-50%);
+        background: rgba(0, 0, 0, 0.25);
+        color: #fff;
+        padding: 10px;
+        font-family: "trebuchet ms", sans-serif;
+        font-size: 24px;
+        font-weight: bold;
+        white-space: nowrap;
+      }
+      
+      /* Flashing text for "Astronaut Time!" */
+      @keyframes flash {
+        0%, 75% { opacity: 1; }
+        100% { opacity: 0; }
+      }
+      #flashText {
+        position: absolute;
+        bottom: 150px;
+        left: 50%;
+        transform: translateX(-50%);
+        font-family: impact, sans-serif;
+        font-size: 42px;
+        color: #00e5ff;
+        text-shadow: 
+          2px 2px 0 #004d99, 
+          -2px -2px 0 #003366, 
+          2px -2px 0 #0055cc, 
+          -2px 2px 0 #0077ff;
+        animation: flash 1.5s infinite;
+        white-space: nowrap;
+      }
+      
+      /* Tracking labels for the aircraft */
+      .trackingLabel {
+        position: absolute;
+        font-family: "trebuchet ms", sans-serif;
+        font-size: 15px;
+        white-space: nowrap;
+      }
+    </style>
+  </head>
+  <body>
+    <!-- Fixed simulation info display -->
+    <div id="infoText"></div>
+    <!-- Phase name display -->
+    <div id="phaseName"></div>
+    <!-- Flashing "Astronaut Time!" display -->
+    <div id="flashText">Astronaut Time!</div>
+    <!-- Tracking labels for angle, speed, and G-force -->
+    <div id="hud">
+      <div id="angleText" class="trackingLabel"></div>
+      <div id="speedText" class="trackingLabel"></div>
+      <div id="gforceText" class="trackingLabel"></div>
+    </div>
+    
+    <!-- Main module script -->
+    <script type="module">
+      import * as THREE from "three";
+      
+      // ============================================================
+      // Constants and Aircraft Data
+      // ============================================================
+      const g = 32.174; // ft/s²
+      const weight = 70000.0; // aircraft weight in lbs
+      const mass = weight / g; // mass in slugs
+      const A = 120.0; // frontal area (ft²)
+      const C_d = 0.2; // drag coefficient
+      
+      const IAS_knots = 250.0; // indicated airspeed (knots)
+      const kts_to_ftps = 1.6878; // conversion: knots to ft/s
+      const rho_sl = 0.002377; // sea-level density (slug/ft³)
+      
+      // Altitude and density data for interpolation
+      const altitudePoints = [25000, 30000, 35000, 40000];
+      const densityPoints  = [0.001066, 0.000891, 0.000738, 0.00060];
+      
+      // ------------------------------------------------------------
+      // Phase Parameters
+      // ------------------------------------------------------------
+      const gamma_target = 50 * Math.PI / 180; // Target climb angle in radians
+      const g_eff_max = 1.8; // Maximum effective g allowed during turning
+      const k1 = 0.5; // Gain for pitch-up control in Phase 1
+      const tau_turn = 1.0; // Lag time constant for turning rate in Phase 1
+      const tol = 0.01; // Tolerance (radians) for phase transitions
+      
+      const v_target_drag = 200.0; // Speed (ft/s) below which extra drag is not applied
+      const k_drag = 0.005; // Gain for variable drag multiplier in Phase 2
+      const gamma_rev_trigger = -50 * Math.PI / 180; // Trigger recovery when flight-path angle reaches -50° (in radians)
+      
+      /**
+       * Convert Indicated Airspeed (IAS) in knots to True Airspeed (TAS) in ft/s
+       * at a given altitude.
+       * @param {number} IAS - Indicated airspeed in knots.
+       * @param {number} alt - Altitude in feet.
+       * @returns {number} True Airspeed in ft/s.
+       */
+      function ias_to_tas(IAS, alt) {
+        let rho = getDensity(alt);
+        return IAS * kts_to_ftps * Math.sqrt(rho_sl / rho);
+      }
+      const v_target_exit = ias_to_tas(250.0, 25000);
+      const k_exit = 0.7;  // Gain for pitch recovery in Phase 4
+      const k_speed = 0.5; // Gain for speed recovery in Phase 4
+      
+      // ============================================================
+      // Helper Functions
+      // ============================================================
+      
+      /**
+       * Interpolate and return the air density at a given altitude.
+       * @param {number} alt - Altitude in feet.
+       * @returns {number} Air density (slug/ft³) at the specified altitude.
+       */
+      function getDensity(alt) {
+        if (alt <= altitudePoints[0]) return densityPoints[0];
+        if (alt >= altitudePoints[altitudePoints.length - 1]) return densityPoints[densityPoints.length - 1];
+        for (let i = 0; i < altitudePoints.length - 1; i++) {
+          if (alt >= altitudePoints[i] && alt <= altitudePoints[i + 1]) {
+            const t = (alt - altitudePoints[i]) / (altitudePoints[i + 1] - altitudePoints[i]);
+            return densityPoints[i] + t * (densityPoints[i + 1] - densityPoints[i]);
+          }
+        }
+        return densityPoints[0];
+      }
+      
+      /**
+       * Compute the True Airspeed (TAS) based on local density.
+       * @param {number} rho - Local air density (slug/ft³).
+       * @returns {number} True Airspeed in ft/s.
+       */
+      function computeTAS(rho) {
+        return IAS_knots * kts_to_ftps * Math.sqrt(rho_sl / rho);
+      }
+      
+      /**
+       * Compute the drag force.
+       * Formula: F_drag = 0.5 * multiplier * rho * speed² * A * C_d
+       * @param {number} rho - Local air density (slug/ft³).
+       * @param {number} speed - True Airspeed in ft/s.
+       * @param {number} [multiplier=1.0] - Optional multiplier to adjust drag.
+       * @returns {number} Drag force.
+       */
+      function computeDrag(rho, speed, multiplier = 1.0) {
+        return 0.5 * multiplier * rho * speed * speed * A * C_d;
+      }
+      
+      /**
+       * Calculate the maximum allowable turning rate (rad/s) so that the effective g does not exceed g_eff_max.
+       * @param {number} gamma - Current flight-path angle in radians.
+       * @param {number} TAS - True Airspeed in ft/s.
+       * @returns {number} Maximum turn rate in rad/s.
+       */
+      function maxTurnRateAllowed(gamma, TAS) {
+        let term = Math.pow(g_eff_max * Math.cos(gamma), 2) - 1;
+        if (term < 0) return 0;
+        return (g / TAS) * Math.sqrt(term);
+      }
+      
+      // ------------------------------------------------------------
+      // Color Helper Functions
+      // ------------------------------------------------------------
+      
+      /**
+       * Compute a color string based on the flight-path angle.
+       * The color interpolates from blue (0°) to red (50°).
+       * @param {number} angle_deg - Angle in degrees.
+       * @returns {string} CSS rgb() color string.
+       */
+      function angleColor(angle_deg) {
+        let norm = Math.min(Math.abs(angle_deg) / 50.0, 1.0);
+        let r = Math.floor(norm * 255);
+        let b = Math.floor((1 - norm) * 255);
+        return `rgb(${r},0,${b})`;
+      }
+      
+      /**
+       * Compute a color string based on the True Airspeed (TAS).
+       * For TAS <= 400 ft/s, returns blue; for TAS >= 700 ft/s, returns dark green; 
+       * linearly interpolates in between.
+       * @param {number} TAS - True Airspeed in ft/s.
+       * @returns {string} CSS rgb() color string.
+       */
+      function speedColor(TAS) {
+        const lower_bound = 400.0;
+        const upper_bound = 700.0;
+        if (TAS <= lower_bound) return 'rgb(0,0,255)';
+        else if (TAS >= upper_bound) return `rgb(0,${Math.floor(0.8 * 255)},0)`;
+        else {
+          let norm = (TAS - lower_bound) / (upper_bound - lower_bound);
+          let green = norm * 0.8;
+          let blue = 1 - norm;
+          return `rgb(0,${Math.floor(green * 255)},${Math.floor(blue * 255)})`;
+        }
+      }
+      
+      /**
+       * Compute a color string for G-force display.
+       * Returns dark green for 0 g, yellow for g's <= 1, and interpolates to red for g's between 1 and 1.8.
+       * @param {number} g_eff - Effective g-force.
+       * @returns {string} CSS rgb() color string.
+       */
+      function gforceColor(g_eff) {
+        if (g_eff === 0) return `rgb(0,${Math.floor(0.6 * 255)},0)`;
+        else if (g_eff <= 1.0) return 'rgb(255,255,0)';
+        else {
+          let norm = (g_eff - 1.0) / (1.8 - 1.0);
+          norm = Math.min(Math.max(norm, 0), 1);
+          let green = 1 - norm;
+          return `rgb(255,${Math.floor(green * 255)},0)`;
+        }
+      }
+      
+      // ------------------------------------------------------------
+      // Create a Gradient Texture for the Background (Sky)
+      // ------------------------------------------------------------
+      /**
+       * Create and return a gradient texture for the scene background.
+       * @returns {THREE.CanvasTexture} Gradient texture.
+       */
+      function createGradientTexture() {
+        const canvas = document.createElement('canvas');
+        canvas.width = 32;
+        canvas.height = 512;
+        const context = canvas.getContext('2d');
+        const gradient = context.createLinearGradient(0, 0, 0, canvas.height);
+        gradient.addColorStop(0, '#87ceeb');
+        gradient.addColorStop(1, '#1e90ff');
+        context.fillStyle = gradient;
+        context.fillRect(0, 0, canvas.width, canvas.height);
+        return new THREE.CanvasTexture(canvas);
+      }
+      
+      // ------------------------------------------------------------
+      // Convert World Coordinates to Screen Coordinates
+      // ------------------------------------------------------------
+      /**
+       * Convert a 3D object's world position to 2D screen coordinates.
+       * @param {THREE.Object3D} obj - The object whose position to convert.
+       * @param {THREE.Camera} camera - The camera used for projection.
+       * @returns {Object} Screen coordinates {x, y}.
+       */
+      function toScreenPosition(obj, camera) {
+        const vector = new THREE.Vector3();
+        vector.copy(obj.position);
+        vector.project(camera);
+        const widthHalf = window.innerWidth / 2;
+        const heightHalf = window.innerHeight / 2;
+        return {
+          x: (vector.x * widthHalf) + widthHalf,
+          y: -(vector.y * heightHalf) + heightHalf
+        };
+      }
+      
+      // ============================================================
+      // Simulation Variables
+      // ============================================================
+      let dt = 0.01;
+      let t = 0;
+      let phase = 1;
+      let finished = false;
+      let t_phase5 = 0;
+      
+      let x = 0;
+      let y = 25000;
+      let z = 0;
+      let gamma = 0;
+      let dgamma_dt = 0;
+      
+      let rho0 = getDensity(y);
+      let TAS0 = computeTAS(rho0);
+      let vx = TAS0 * Math.cos(gamma);
+      let vy = TAS0 * Math.sin(gamma);
+      
+      let trajectory = [];
+      trajectory.push(new THREE.Vector3(x, y, z));
+      
+      let simInfo = { t: t, x: x, y: y, gamma: 0, speed: TAS0, g_eff: 0 };
+      
+      // ============================================================
+      // three.js Scene Setup
+      // ============================================================
+      const scene = new THREE.Scene();
+      scene.background = createGradientTexture();
+      
+      // Camera offset will be rotated over time.
+      const cameraOffset = new THREE.Vector3(0, -4000, 30000);
+      const camera = new THREE.PerspectiveCamera(60, window.innerWidth / window.innerHeight, 1, 100000);
+      camera.position.copy(new THREE.Vector3(0, 25000, 12500));
+      
+      const renderer = new THREE.WebGLRenderer({ antialias: true });
+      renderer.setSize(window.innerWidth, window.innerHeight);
+      document.body.appendChild(renderer.domElement);
+      
+      // ------------------------------------------------------------
+      // Create the Aircraft Object (Cone)
+      // ------------------------------------------------------------
+      /**
+       * Create the aircraft object to represent the "Vomit Comet".
+       * In this simulation, the aircraft is represented as a red cone.
+       */
+      const aircraftGeometry = new THREE.ConeGeometry(180, 600, 6);
+      const aircraftMaterial = new THREE.MeshBasicMaterial({ color: 0xff0000 });
+      const aircraft = new THREE.Mesh(aircraftGeometry, aircraftMaterial);
+      scene.add(aircraft);
+      
+      // ------------------------------------------------------------
+      // Create the Dynamic Trajectory Line
+      // ------------------------------------------------------------
+      /**
+       * Create a dynamic line that shows the aircraft's trajectory.
+       */
+      const maxPoints = 10000;
+      const positions = new Float32Array(maxPoints * 3);
+      const trajectoryGeometry = new THREE.BufferGeometry();
+      trajectoryGeometry.setAttribute('position', new THREE.BufferAttribute(positions, 3));
+      trajectoryGeometry.setDrawRange(0, 0);
+      const trajectoryMaterial = new THREE.LineBasicMaterial({ color: 0x0000ff });
+      const trajectoryLine = new THREE.Line(trajectoryGeometry, trajectoryMaterial);
+      scene.add(trajectoryLine);
+      
+      // ============================================================
+      // Simulation Update Function
+      // ============================================================
+      /**
+       * Update the simulation state based on the current phase.
+       * Phase 1: Powered ascent with thrust on.
+       * Phase 2: Parabolic zero‑G maneuver (thrust off, increased drag).
+       * Phase 3: Ballistic trajectory (thrust off, normal drag).
+       * Phase 4: Recovery/Exit maneuver (thrust on, pitch-up and accelerate).
+       * Phase 5: Final level flight.
+       * This function updates position, velocity, flight-path angle (gamma), and other parameters.
+       */
+      function updateSimulation() {
+        if (finished) return;
+        let rho = getDensity(y);
+        let speed = Math.sqrt(vx * vx + vy * vy);
+        let TAS = speed;
+      
+        if (phase === 1) {
+          if (t < 2.0) { 
+            gamma = 0; 
+            dgamma_dt = 0; 
+          } else {
+            let desired_turn = k1 * (gamma_target - gamma);
+            dgamma_dt += (desired_turn - dgamma_dt) * dt / tau_turn;
+            let cap = maxTurnRateAllowed(gamma, TAS);
+            dgamma_dt = dgamma_dt >= 0 ? Math.min(dgamma_dt, cap) : Math.max(dgamma_dt, -cap);
+            gamma += dgamma_dt * dt;
+            if (gamma > gamma_target) { 
+              gamma = gamma_target; 
+              dgamma_dt = 0; 
+            }
+          }
+          rho = getDensity(y);
+          TAS = computeTAS(rho);
+          vx = TAS * Math.cos(gamma);
+          vy = TAS * Math.sin(gamma);
+          x += vx * dt;
+          y += vy * dt;
+          if (t >= 2.0 && gamma >= gamma_target - tol) { 
+            phase = 2;
+          }
+        } else if (phase === 2) {
+          speed = Math.sqrt(vx * vx + vy * vy);
+          TAS = speed;
+          let M = TAS > v_target_drag ? (1 + k_drag * (TAS - v_target_drag)) : 1.0;
+          let drag = computeDrag(rho, TAS, M);
+          let drag_x = speed > 0 ? drag * (vx / speed) : 0;
+          let drag_y = speed > 0 ? drag * (vy / speed) : 0;
+          let weight_x = 0, weight_y = -weight;
+          let F_net_x = -drag_x + weight_x;
+          let F_net_y = -drag_y + weight_y;
+          let ax = F_net_x / mass;
+          let ay = F_net_y / mass;
+          vx += ax * dt;
+          vy += ay * dt;
+          x += vx * dt;
+          y += vy * dt;
+          gamma = Math.atan2(vy, vx);
+          if (gamma <= gamma_rev_trigger + tol) { 
+            phase = 3; 
+          }
+        } else if (phase === 3) {
+          speed = Math.sqrt(vx * vx + vy * vy);
+          TAS = speed;
+          let drag, drag_x, drag_y;
+          if (speed > 0) { 
+            drag = computeDrag(rho, TAS); 
+            drag_x = drag * (vx / speed); 
+            drag_y = drag * (vy / speed); 
+          } else { 
+            drag_x = drag_y = 0; 
+          }
+          let weight_x = 0, weight_y = -weight;
+          let F_net_x = -drag_x;
+          let F_net_y = -drag_y + weight_y;
+          let ax = F_net_x / mass;
+          let ay = F_net_y / mass;
+          vx += ax * dt;
+          vy += ay * dt;
+          x += vx * dt;
+          y += vy * dt;
+          gamma = speed > 0 ? Math.atan2(vy, vx) : 0;
+          if (y <= 15000 || gamma <= ((-50 * Math.PI / 180) - tol)) { 
+            phase = 4;
+          }
+        } else if (phase === 4) {
+          speed = Math.sqrt(vx * vx + vy * vy);
+          TAS = speed;
+          let error_gamma = 0 - gamma;
+          let desired_turn = k_exit * error_gamma;
+          let cap = maxTurnRateAllowed(gamma, speed);
+          let dgamma = Math.max(-cap, Math.min(desired_turn, cap));
+          gamma += dgamma * dt;
+          let error_speed = v_target_exit - speed;
+          let a_command = k_speed * error_speed;
+          rho = getDensity(y);
+          let drag = computeDrag(rho, speed);
+          let a_net = a_command;
+          speed += a_net * dt;
+          vx = speed * Math.cos(gamma);
+          vy = speed * Math.sin(gamma);
+          x += vx * dt;
+          y += vy * dt;
+          if (Math.abs(gamma) <= tol && Math.abs(speed - v_target_exit) <= 5) { 
+            phase = 5; 
+            t_phase5 = 0; 
+          }
+        } else if (phase === 5) {
+          gamma = 0;
+          dgamma_dt = 0;
+          speed = v_target_exit;
+          vx = speed * Math.cos(gamma);
+          vy = speed * Math.sin(gamma);
+          x += vx * dt;
+          y += vy * dt;
+          t_phase5 += dt;
+          if (t_phase5 >= 2.0) { 
+            finished = true;
+          }
+        }
+        t += dt;
+        trajectory.push(new THREE.Vector3(x, y, z));
+        simInfo.t = t;
+        simInfo.x = x;
+        simInfo.y = y;
+        simInfo.gamma = gamma * 180 / Math.PI;
+        simInfo.speed = speed;
+        if (phase === 1 || phase === 4)
+          simInfo.g_eff = (1 / Math.cos(gamma)) * Math.sqrt(1 + Math.pow(speed * dgamma_dt / g, 2));
+        else if (phase === 2 || phase === 3)
+          simInfo.g_eff = 0;
+        else if (phase === 5)
+          simInfo.g_eff = 1;
+      }
+      
+      // ============================================================
+      // Update Trajectory Line Geometry
+      // ============================================================
+      /**
+       * Update the geometry of the trajectory line based on the current trajectory points.
+       * Copies each point's x, y, and z values into the buffer geometry.
+       */
+      function updateTrajectoryLine() {
+        const positionsAttr = trajectoryGeometry.attributes.position.array;
+        const numPoints = trajectory.length;
+        for (let i = 0; i < numPoints && i < maxPoints; i++) {
+          positionsAttr[i * 3] = trajectory[i].x;
+          positionsAttr[i * 3 + 1] = trajectory[i].y;
+          positionsAttr[i * 3 + 2] = trajectory[i].z;
+        }
+        trajectoryGeometry.setDrawRange(0, Math.min(numPoints, maxPoints));
+        trajectoryGeometry.attributes.position.needsUpdate = true;
+      }
+      
+      // ============================================================
+      // Main Animation Loop
+      // ============================================================
+      /**
+       * The main animation loop.
+       * Advances the simulation, updates the aircraft object and trajectory line,
+       * rotates the camera smoothly around the aircraft, and updates the HUD labels.
+       */
+      function animate() {
+        requestAnimationFrame(animate);
+        // Perform several simulation updates per frame for smooth dynamics.
+        for (let i = 0; i < 5; i++) { updateSimulation(); }
+      
+        // Update aircraft position and orientation.
+        aircraft.position.set(x, y, z);
+        aircraft.rotation.set(0, 0, gamma - Math.PI / 2);
+        updateTrajectoryLine();
+      
+        // Smooth, horizontal camera rotation over an estimated duration.
+        const estimatedDuration = 33; // seconds
+        let progress = Math.min(simInfo.t / estimatedDuration, 2);
+        let additionalRotation = progress * Math.PI; // 360° = π radians
+        let rotatedOffset = cameraOffset.clone().applyAxisAngle(new THREE.Vector3(0, 1, 0), additionalRotation);
+        camera.position.copy(aircraft.position).add(rotatedOffset);
+        camera.lookAt(aircraft.position);
+      
+        // Tracking Labels: Convert aircraft position to screen coordinates.
+        const screenPos = toScreenPosition(aircraft, camera);
+        const offsetAngle = { x: -85, y: -75 };
+        const offsetSpeed = { x: 30, y: -50 };
+        const offsetGForce = { x: -30, y: 60 };
+        function rotateOffset(offset, angle) {
+          return {
+            x: offset.x * Math.cos(angle) - offset.y * Math.sin(angle),
+            y: offset.x * Math.sin(angle) + offset.y * Math.cos(angle)
+          };
+        }
+        const rotatedAngle = rotateOffset(offsetAngle, -gamma);
+        const rotatedSpeed = rotateOffset(offsetSpeed, -gamma);
+        const rotatedGForce = rotateOffset(offsetGForce, -gamma);
+      
+        // Update positions and content of tracking labels.
+        const angleEl = document.getElementById("angleText");
+        const speedEl = document.getElementById("speedText");
+        const gforceEl = document.getElementById("gforceText");
+        angleEl.style.left = (screenPos.x + rotatedAngle.x) + "px";
+        angleEl.style.top  = (screenPos.y + rotatedAngle.y) + "px";
+        speedEl.style.left = (screenPos.x + rotatedSpeed.x) + "px";
+        speedEl.style.top  = (screenPos.y + rotatedSpeed.y) + "px";
+        gforceEl.style.left = (screenPos.x + rotatedGForce.x) + "px";
+        gforceEl.style.top  = (screenPos.y + rotatedGForce.y) + "px";
+      
+        // Adjust G-force label font size based on phase.
+        if (phase === 2 || phase === 3) {
+          gforceEl.style.fontSize = "20px";
+        } else {
+          gforceEl.style.fontSize = "15px";
+        }
+      
+        // Update fixed simulation info display.
+        document.getElementById("infoText").innerHTML =
+          `<b>Sim Time:</b> ${simInfo.t.toFixed(2)} s<br>` +
+          `<b>Altitude:</b> ${simInfo.y.toFixed(0)} ft<br>` +
+          `<b>Distance:</b> ${simInfo.x.toFixed(0)} ft`;
+      
+        // Update phase name display.
+        let phaseName = "";
+        if (phase === 1) phaseName = "Powered Ascent";
+        else if (phase === 2) phaseName = "Parabolic Zero‑G Maneuver";
+        else if (phase === 3) phaseName = "Ballistic Trajectory";
+        else if (phase === 4 || phase === 5) phaseName = "Recovery / Exit";
+        document.getElementById("phaseName").innerHTML = phaseName;
+      
+        // Update flashing text display for "Astronaut Time!" during specific phases.
+        const flashEl = document.getElementById("flashText");
+        if (phase === 2 || phase === 3) flashEl.style.display = "block";
+        else flashEl.style.display = "none";
+      
+        // Update tracking labels with current simulation data.
+        angleEl.innerHTML = `<b>Angle:</b> ${simInfo.gamma.toFixed(1)}°`;
+        angleEl.style.color = angleColor(simInfo.gamma);
+        speedEl.innerHTML = `<b>Speed:</b> ${simInfo.speed.toFixed(0)} ft/s`;
+        speedEl.style.color = speedColor(simInfo.speed);
+        gforceEl.innerHTML = `<b>G-Force:</b> ${simInfo.g_eff.toFixed(2)} g`;
+        gforceEl.style.color = gforceColor(simInfo.g_eff);
+      
+        renderer.render(scene, camera);
+      }
+      animate();
+      
+      // ============================================================
+      // Handle Window Resize
+      // ============================================================
+      window.addEventListener('resize', () => {
+        camera.aspect = window.innerWidth / window.innerHeight;
+        camera.updateProjectionMatrix();
+        renderer.setSize(window.innerWidth, window.innerHeight);
+      });
+    </script>
+  </body>
+</html>
