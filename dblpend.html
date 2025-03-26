@@ -1,0 +1,429 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>3D Double Pendulum Simulation</title>
+  <style>
+    body { margin: 0; overflow: hidden; }
+    canvas { display: block; }
+    /* Headings for the two views */
+    #headingLeft {
+      position: absolute;
+      top: 10px;
+      left: 10px;
+      color: #fff;
+      font-size: 20px;
+      font-family: "trebuchet ms", sans-serif;
+      z-index: 2;
+    }
+    #headingRight {
+      position: absolute;
+      top: 10px;
+      right: 10px;
+      color: #fff;
+      font-size: 20px;
+      font-family: "trebuchet ms", sans-serif;
+      z-index: 2;
+    }
+    /* Vertical divider between views */
+    #divider {
+      position: absolute;
+      top: 0;
+      left: calc(50% - 1px);
+      width: 2px;
+      height: 100%;
+      background: #fff;
+      z-index: 2;
+    }
+    /* Centered GUI container */
+    .dg.main {
+      position: absolute !important;
+      top: 10px;
+      left: 50% !important;
+      transform: translateX(-50%);
+      z-index: 3;
+    }
+    /* Instruction text centered at the bottom */
+    #instructions {
+      position: absolute;
+      bottom: 15px;
+      left: 50%;
+      transform: translateX(-50%);
+      font-family: "trebuchet ms", sans-serif;
+      font-size: 18px;
+      text-align: center;
+      color: #fff;
+      background: rgba(0, 0, 0, 0.5);
+      padding: 5px 10px;
+      border-radius: 4px;
+      z-index: 2;
+    }
+  </style>
+  <!-- Import maps -->
+  <script type="importmap">
+    {
+      "imports": {
+        "three": "https://cdn.jsdelivr.net/npm/three@0.150.1/build/three.module.js",
+        "cannon-es": "https://cdn.jsdelivr.net/npm/cannon-es@0.20.0/dist/cannon-es.js",
+        "lil-gui": "https://cdn.jsdelivr.net/npm/lil-gui@0.18/+esm"
+      }
+    }
+  </script>
+</head>
+<body>
+  <!-- Headings, divider, and instructions -->
+  <div id="headingLeft">Top-Down View</div>
+  <div id="headingRight">Side View</div>
+  <div id="divider"></div>
+  <div id="instructions">
+    Click and drag a bob to reposition it.<br>
+    Double-click anywhere to pause/unpause.<br>
+    (Bobs can be repositioned even while paused)
+  </div>
+  <script type="module">
+    import * as THREE from "three";
+    import * as CANNON from "cannon-es";
+    import { GUI } from "lil-gui";
+
+    // --- Global Parameters and Helpers ---
+    const params = {
+      mass1: 2.0,
+      mass2: 2.0,
+      L1: 5.0,
+      L2: 5.0,
+      gravity: -9.81
+    };
+    // Bob radius scales with mass (cube-root rule)
+    const getBobRadius = (mass) => 0.5 * Math.cbrt(mass / 2.0);
+    // Trail duration in seconds.
+    const trailDuration = 3;
+
+    // --- Global Simulation Objects ---
+    let pivotBody, body1, body2, constraint1, constraint2;
+    let bobMesh1, bobMesh2, pivotMesh;
+    let rodLine1, rodLine2, rodGeom1, rodGeom2;
+    // For the trail (tube) we'll record Bob2's positions.
+    const trailPoints = [];
+
+    // Fixed pivot position and initial angles.
+    const pivotPos = new CANNON.Vec3(0, 10, 0);
+    const theta1 = Math.PI / 4, phi1 = Math.PI / 4;
+    const theta2 = Math.PI / 3, phi2 = -Math.PI / 6;
+
+    // --- THREE.JS Scene Setup ---
+    const scene = new THREE.Scene();
+    scene.background = new THREE.Color(0x000000);
+
+    // Create starry background.
+    const createStarField = (count, size) => {
+      const geometry = new THREE.BufferGeometry();
+      const positions = [];
+      for (let i = 0; i < count; i++){
+        positions.push((Math.random()-0.5)*2000);
+        positions.push((Math.random()-0.5)*2000);
+        positions.push((Math.random()-0.5)*2000);
+      }
+      geometry.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3));
+      const material = new THREE.PointsMaterial({ color: 0xffffff, size, sizeAttenuation: true });
+      return new THREE.Points(geometry, material);
+    };
+    scene.add(createStarField(1000, 0.7));
+    scene.add(createStarField(500, 1.5));
+
+    // --- Cameras ---
+    const aspectRight = (window.innerWidth / 2) / window.innerHeight;
+    const cameraRight = new THREE.PerspectiveCamera(45, aspectRight, 0.1, 1000);
+    cameraRight.position.set(0, 0, 20);
+    cameraRight.lookAt(0, 0, 0);
+
+    const aspectLeft = (window.innerWidth / 2) / window.innerHeight;
+    const cameraLeft = new THREE.PerspectiveCamera(45, aspectLeft, 0.1, 1000);
+    cameraLeft.position.set(0, 60, 0);
+    cameraLeft.lookAt(0, 0, 0);
+
+    const renderer = new THREE.WebGLRenderer({ antialias: true });
+    renderer.setSize(window.innerWidth, window.innerHeight);
+    renderer.setScissorTest(true);
+    document.body.appendChild(renderer.domElement);
+
+    // --- Lighting ---
+    scene.add(new THREE.AmbientLight(0x404040));
+    const directionalLight = new THREE.DirectionalLight(0xffffff, 1);
+    directionalLight.position.set(10, 10, 10);
+    scene.add(directionalLight);
+
+    // --- CANNON-ES Physics Setup ---
+    const world = new CANNON.World();
+    world.gravity.set(0, params.gravity, 0);
+    world.broadphase = new CANNON.NaiveBroadphase();
+    world.solver.iterations = 10;
+    let paused = false; // Pause flag
+
+    // --- Initialize Simulation Objects ---
+    pivotBody = new CANNON.Body({ mass: 0, position: pivotPos.clone() });
+    world.addBody(pivotBody);
+
+    { // Body1
+      const radius1 = getBobRadius(params.mass1);
+      const offset1 = new CANNON.Vec3(
+        params.L1 * Math.sin(theta1) * Math.cos(phi1),
+        -params.L1 * Math.cos(theta1),
+        params.L1 * Math.sin(theta1) * Math.sin(phi1)
+      );
+      const pos1 = pivotBody.position.vadd(offset1);
+      body1 = new CANNON.Body({ mass: params.mass1, position: pos1.clone(), shape: new CANNON.Sphere(radius1) });
+      world.addBody(body1);
+    }
+
+    { // Body2
+      const radius2 = getBobRadius(params.mass2);
+      const offset2 = new CANNON.Vec3(
+        params.L2 * Math.sin(theta2) * Math.cos(phi2),
+        -params.L2 * Math.cos(theta2),
+        params.L2 * Math.sin(theta2) * Math.sin(phi2)
+      );
+      const pos2 = body1.position.vadd(offset2);
+      body2 = new CANNON.Body({ mass: params.mass2, position: pos2.clone(), shape: new CANNON.Sphere(radius2) });
+      world.addBody(body2);
+    }
+
+    constraint1 = new CANNON.DistanceConstraint(pivotBody, body1, params.L1);
+    world.addConstraint(constraint1);
+    constraint2 = new CANNON.DistanceConstraint(body1, body2, params.L2);
+    world.addConstraint(constraint2);
+
+    // --- Create Three.js Meshes ---
+    {
+      // Bob meshes: magenta and cyan.
+      const bobMeshMat1 = new THREE.MeshPhongMaterial({ color: 0xff00ff });
+      const bobMeshMat2 = new THREE.MeshPhongMaterial({ color: 0x00ffff });
+      const sphereGeom = new THREE.SphereGeometry(1, 32, 32);
+      bobMesh1 = new THREE.Mesh(sphereGeom, bobMeshMat1);
+      bobMesh2 = new THREE.Mesh(sphereGeom, bobMeshMat2);
+      scene.add(bobMesh1, bobMesh2);
+      bobMesh1.scale.set(getBobRadius(params.mass1), getBobRadius(params.mass1), getBobRadius(params.mass1));
+      bobMesh2.scale.set(getBobRadius(params.mass2), getBobRadius(params.mass2), getBobRadius(params.mass2));
+
+      // Pivot mesh: using an inherent radius of 0.15.
+      pivotMesh = new THREE.Mesh(
+        new THREE.SphereGeometry(0.15, 16, 16),
+        new THREE.MeshStandardMaterial({ 
+          color: 0xffffff, metalness: 1, roughness: 0.05, 
+          emissive: 0xffffff, emissiveIntensity: 1.0 
+        })
+      );
+      scene.add(pivotMesh);
+      pivotMesh.position.copy(pivotBody.position);
+
+      // Rods.
+      rodGeom1 = new THREE.BufferGeometry();
+      rodGeom1.setAttribute('position', new THREE.Float32BufferAttribute([0, 0, 0, 0, 0, 0], 3));
+      rodLine1 = new THREE.Line(rodGeom1, new THREE.LineBasicMaterial({ color: 0xffffff }));
+      scene.add(rodLine1);
+      rodGeom2 = new THREE.BufferGeometry();
+      rodGeom2.setAttribute('position', new THREE.Float32BufferAttribute([0, 0, 0, 0, 0, 0], 3));
+      rodLine2 = new THREE.Line(rodGeom2, new THREE.LineBasicMaterial({ color: 0xffffff }));
+      scene.add(rodLine2);
+    }
+
+    // --- Trail for Bob2 as a Tube Geometry ---
+    // Record Bob2's positions over the last 5 seconds.
+    // (trailPoints is already defined above)
+    let trailMesh = new THREE.Mesh(new THREE.BufferGeometry(), new THREE.MeshBasicMaterial({
+      color: 0x00ffff,
+      transparent: true,
+      opacity: 0.3
+    }));
+    scene.add(trailMesh);
+
+    // --- Update Cameras ---
+    const updateCameras = () => {
+      const maxBobRadius = Math.max(getBobRadius(params.mass1), getBobRadius(params.mass2));
+      const maxExtent = params.L1 + params.L2 + maxBobRadius;
+      cameraLeft.position.set(0, maxExtent * 4.2, 0);
+      cameraLeft.lookAt(0, 0, 0);
+      cameraRight.position.set(0, pivotPos.y, maxExtent * 3.0);
+      cameraRight.lookAt(0, pivotPos.y, 0);
+    };
+    updateCameras();
+
+    // --- GUI Setup ---
+    const gui = new GUI();
+    gui.add(params, 'mass1', 0.5, 10, 0.1).name('Bob 1 Mass').onChange(() => {
+      const newRadius = getBobRadius(params.mass1);
+      body1.mass = params.mass1;
+      body1.shapes = [];
+      body1.addShape(new CANNON.Sphere(newRadius));
+      body1.updateMassProperties();
+      bobMesh1.scale.set(newRadius, newRadius, newRadius);
+      updateCameras();
+    });
+    gui.add(params, 'mass2', 0.5, 10, 0.1).name('Bob 2 Mass').onChange(() => {
+      const newRadius = getBobRadius(params.mass2);
+      body2.mass = params.mass2;
+      body2.shapes = [];
+      body2.addShape(new CANNON.Sphere(newRadius));
+      body2.updateMassProperties();
+      bobMesh2.scale.set(newRadius, newRadius, newRadius);
+      updateCameras();
+    });
+    gui.add(params, 'L1', 2, 10, 0.1).name('String 1 Length').onChange(() => {
+      constraint1.distance = params.L1;
+      updateCameras();
+    });
+    gui.add(params, 'L2', 2, 10, 0.1).name('String 2 Length').onChange(() => {
+      constraint2.distance = params.L2;
+      updateCameras();
+    });
+    gui.add(params, 'gravity', -20, -0.1, 0.1).name('Gravity').onChange(() => {
+      world.gravity.set(0, params.gravity, 0);
+    });
+    gui.domElement.style.position = "absolute";
+    gui.domElement.style.top = "10px";
+    gui.domElement.style.left = "50%";
+    gui.domElement.style.transform = "translateX(-50%)";
+
+    // --- Dragging Interaction ---
+    const raycaster = new THREE.Raycaster();
+    const mouse = new THREE.Vector2();
+    let draggedBody = null;
+    let dragPlane = new THREE.Plane();
+    let dragOffset = new THREE.Vector3();
+    let activeCamera = null;
+
+    const getActiveCamera = (clientX) => (clientX < window.innerWidth / 2 ? cameraLeft : cameraRight);
+
+    function onMouseDown(event) {
+      event.preventDefault();
+      const rect = renderer.domElement.getBoundingClientRect();
+      const x = event.clientX - rect.left;
+      const y = event.clientY - rect.top;
+      activeCamera = getActiveCamera(event.clientX);
+      const viewportX = (activeCamera === cameraLeft) ? 0 : window.innerWidth / 2;
+      const viewportWidth = window.innerWidth / 2;
+      mouse.x = ((x - viewportX) / viewportWidth) * 2 - 1;
+      mouse.y = - (y / window.innerHeight) * 2 + 1;
+      raycaster.setFromCamera(mouse, activeCamera);
+      const intersects = raycaster.intersectObjects([bobMesh1, bobMesh2]);
+      if (intersects.length > 0) {
+        const intersect = intersects[0];
+        draggedBody = (intersect.object === bobMesh1) ? body1 : body2;
+        // Zero out velocity for the other bob.
+        if (draggedBody === body1) {
+          body2.velocity.set(0, 0, 0);
+          body2.angularVelocity.set(0, 0, 0);
+        } else {
+          body1.velocity.set(0, 0, 0);
+          body1.angularVelocity.set(0, 0, 0);
+        }
+        if (draggedBody) {
+          draggedBody.type = CANNON.Body.KINEMATIC;
+          draggedBody.velocity.set(0, 0, 0);
+          draggedBody.angularVelocity.set(0, 0, 0);
+          const camDir = new THREE.Vector3();
+          activeCamera.getWorldDirection(camDir);
+          dragPlane.setFromNormalAndCoplanarPoint(camDir, intersect.point);
+          dragOffset.copy(intersect.point).sub(intersect.object.position);
+        }
+      }
+    }
+
+    function onMouseMove(event) {
+      if (!draggedBody) return;
+      event.preventDefault();
+      const rect = renderer.domElement.getBoundingClientRect();
+      const x = event.clientX - rect.left;
+      const y = event.clientY - rect.top;
+      const viewportX = (activeCamera === cameraLeft) ? 0 : window.innerWidth / 2;
+      const viewportWidth = window.innerWidth / 2;
+      mouse.x = ((x - viewportX) / viewportWidth) * 2 - 1;
+      mouse.y = - (y / window.innerHeight) * 2 + 1;
+      raycaster.setFromCamera(mouse, activeCamera);
+      const intersectionPoint = new THREE.Vector3();
+      raycaster.ray.intersectPlane(dragPlane, intersectionPoint);
+      if (intersectionPoint) {
+        const newPos = intersectionPoint.sub(dragOffset);
+        draggedBody.position.set(newPos.x, newPos.y, newPos.z);
+        if (draggedBody === body1) {
+          bobMesh1.position.copy(draggedBody.position);
+        } else {
+          bobMesh2.position.copy(draggedBody.position);
+        }
+      }
+    }
+
+    function onMouseUp(event) {
+      if (draggedBody) {
+        draggedBody.type = CANNON.Body.DYNAMIC;
+        draggedBody.velocity.set(0, 0, 0);
+        draggedBody.angularVelocity.set(0, 0, 0);
+        draggedBody = null;
+      }
+    }
+
+    renderer.domElement.addEventListener('mousedown', onMouseDown, false);
+    renderer.domElement.addEventListener('mousemove', onMouseMove, false);
+    renderer.domElement.addEventListener('mouseup', onMouseUp, false);
+    renderer.domElement.addEventListener('mouseleave', onMouseUp, false);
+
+    // --- Double-Click Pause/Unpause ---
+    renderer.domElement.addEventListener('dblclick', () => {
+      paused = !paused;
+      console.log(paused ? "Simulation paused" : "Simulation resumed");
+    });
+
+    // --- Animation Loop ---
+    const timeStep = 1/60;
+    function animate() {
+      requestAnimationFrame(animate);
+      if (!paused) world.step(timeStep);
+      bobMesh1.position.copy(body1.position);
+      bobMesh2.position.copy(body2.position);
+      // Update rods.
+      const arr1 = rodGeom1.attributes.position.array;
+      arr1[0] = pivotBody.position.x; arr1[1] = pivotBody.position.y; arr1[2] = pivotBody.position.z;
+      arr1[3] = body1.position.x;    arr1[4] = body1.position.y;    arr1[5] = body1.position.z;
+      rodGeom1.attributes.position.needsUpdate = true;
+      const arr2 = rodGeom2.attributes.position.array;
+      arr2[0] = body1.position.x; arr2[1] = body1.position.y; arr2[2] = body1.position.z;
+      arr2[3] = body2.position.x; arr2[4] = body2.position.y; arr2[5] = body2.position.z;
+      rodGeom2.attributes.position.needsUpdate = true;
+
+      // --- Update Trail for Bob2 as a Tube ---
+      const now = performance.now() / 1000;
+      // Record current position (converted to THREE.Vector3).
+      trailPoints.push({ position: new THREE.Vector3(body2.position.x, body2.position.y, body2.position.z), time: now });
+      while (trailPoints.length && now - trailPoints[0].time > trailDuration) {
+        trailPoints.shift();
+      }
+      if (trailPoints.length >= 2) {
+        const points = trailPoints.map(pt => pt.position);
+        const curve = new THREE.CatmullRomCurve3(points);
+        // Tube radius is fixed at 30% of Bob2's diameter.
+        const tubeRadius = 0.3 * bobMesh2.scale.x;
+        const tubularSegments = Math.max(Math.floor(points.length * 10), 6);
+        const tubeGeo = new THREE.TubeGeometry(curve, tubularSegments, tubeRadius, 8, false);
+        trailMesh.geometry.dispose();
+        trailMesh.geometry = tubeGeo;
+      }
+
+      // --- Render Views ---
+      renderer.setViewport(0, 0, window.innerWidth / 2, window.innerHeight);
+      renderer.setScissor(0, 0, window.innerWidth / 2, window.innerHeight);
+      renderer.render(scene, cameraLeft);
+      renderer.setViewport(window.innerWidth / 2, 0, window.innerWidth / 2, window.innerHeight);
+      renderer.setScissor(window.innerWidth / 2, 0, window.innerWidth / 2, window.innerHeight);
+      renderer.render(scene, cameraRight);
+    }
+    animate();
+
+    // --- Window Resize ---
+    window.addEventListener("resize", () => {
+      renderer.setSize(window.innerWidth, window.innerHeight);
+      const newAspect = (window.innerWidth / 2) / window.innerHeight;
+      cameraLeft.aspect = newAspect; cameraLeft.updateProjectionMatrix();
+      cameraRight.aspect = newAspect; cameraRight.updateProjectionMatrix();
+    });
+  </script>
+</body>
+</html>
