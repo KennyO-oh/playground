@@ -96,7 +96,11 @@
       gravity: -9.81
     };
 
-    // Helper function that calculates a bob's radius using a cube-root scaling rule.
+    /**
+     * Calculates a bob's radius using a cube-root scaling rule.
+     * @param {number} mass - The mass of the bob.
+     * @returns {number} The bob's radius.
+     */
     const getBobRadius = (mass) => 0.5 * Math.cbrt(mass / 2.0);
     // Trail duration in seconds.
     const trailDuration = 5;
@@ -116,7 +120,12 @@
     const scene = new THREE.Scene();
     scene.background = new THREE.Color(0x000000);
 
-    // Create starry background.
+    /**
+     * Creates a starry background.
+     * @param {number} count - Number of stars.
+     * @param {number} size - Size of each star.
+     * @returns {THREE.Points} Star field mesh.
+     */
     const createStarField = (count, size) => {
       const geometry = new THREE.BufferGeometry();
       const positions = [];
@@ -132,7 +141,7 @@
     scene.add(createStarField(1000, 0.7));
     scene.add(createStarField(500, 1.5));
 
-    // Camera setup.
+    // Camera setup for dual views.
     const aspectRight = (window.innerWidth / 2) / window.innerHeight;
     const cameraRight = new THREE.PerspectiveCamera(45, aspectRight, 0.1, 1000);
     cameraRight.position.set(0, 0, 20);
@@ -210,6 +219,7 @@
       scene.add(pivotMesh);
       pivotMesh.position.copy(pivotBody.position);
 
+      // Create rod lines connecting pivot to bob1 and bob1 to bob2.
       rodGeom1 = new THREE.BufferGeometry();
       rodGeom1.setAttribute('position', new THREE.Float32BufferAttribute([0, 0, 0, 0, 0, 0], 3));
       rodLine1 = new THREE.Line(rodGeom1, new THREE.LineBasicMaterial({ color: 0xffffff }));
@@ -228,7 +238,13 @@
     }));
     scene.add(trailMesh);
 
-    // Function to update camera positions.
+    // ------------------------------------------------------------------
+    // Camera Update Function
+    // ------------------------------------------------------------------
+    /**
+     * Updates camera positions based on simulation extents.
+     * Assumes cameraLeft and cameraRight are used for top-down and side views.
+     */
     const updateCameras = () => {
       const maxBobRadius = Math.max(getBobRadius(params.mass1), getBobRadius(params.mass2));
       const maxExtent = params.L1 + params.L2 + maxBobRadius;
@@ -239,7 +255,9 @@
     };
     updateCameras();
 
-    // GUI setup.
+    // ------------------------------------------------------------------
+    // GUI Setup
+    // ------------------------------------------------------------------
     const gui = new GUI();
     gui.add(params, 'mass1', 0.5, 10, 0.1).name('Bob 1 Mass').onChange(() => {
       const newRadius = getBobRadius(params.mass1);
@@ -275,7 +293,9 @@
     gui.domElement.style.left = "50%";
     gui.domElement.style.transform = "translateX(-50%)";
 
-    // Dragging interaction.
+    // ------------------------------------------------------------------
+    // Dragging Interaction Functions
+    // ------------------------------------------------------------------
     const raycaster = new THREE.Raycaster();
     const mouse = new THREE.Vector2();
     let draggedBody = null;
@@ -284,6 +304,10 @@
     let activeCamera = null;
     const getActiveCamera = (clientX) => (clientX < window.innerWidth / 2 ? cameraLeft : cameraRight);
 
+    /**
+     * Handles the mouse down event to begin dragging a pendulum bob.
+     * @param {MouseEvent} event - The mouse down event.
+     */
     function onMouseDown(event) {
       event.preventDefault();
       const rect = renderer.domElement.getBoundingClientRect();
@@ -318,6 +342,10 @@
       }
     }
 
+    /**
+     * Handles the mouse move event to update the position of the dragged bob.
+     * @param {MouseEvent} event - The mouse move event.
+     */
     function onMouseMove(event) {
       if (!draggedBody) return;
       event.preventDefault();
@@ -342,6 +370,10 @@
       }
     }
 
+    /**
+     * Handles the mouse up event to release the dragged bob.
+     * @param {MouseEvent} event - The mouse up event.
+     */
     function onMouseUp(event) {
       if (draggedBody) {
         draggedBody.type = CANNON.Body.DYNAMIC;
@@ -356,14 +388,21 @@
     renderer.domElement.addEventListener('mouseup', onMouseUp, false);
     renderer.domElement.addEventListener('mouseleave', onMouseUp, false);
 
-    // Double-click to toggle pause/unpause.
+    // --- Double-click to toggle pause/unpause ---
     renderer.domElement.addEventListener('dblclick', () => {
       paused = !paused;
       console.log(paused ? "Simulation paused" : "Simulation resumed");
     });
 
-    // Animation loop.
+    // ------------------------------------------------------------------
+    // Animation Loop
+    // ------------------------------------------------------------------
     const timeStep = 1/60;
+    /**
+     * The main animation loop.
+     * Advances the physics simulation (if not paused), updates pendulum bobs,
+     * rod geometries, and Bob2's trail, then renders the scene in two views.
+     */
     function animate() {
       requestAnimationFrame(animate);
       if (!paused) world.step(timeStep);
@@ -378,7 +417,7 @@
       arr2[0] = body1.position.x; arr2[1] = body1.position.y; arr2[2] = body1.position.z;
       arr2[3] = body2.position.x; arr2[4] = body2.position.y; arr2[5] = body2.position.z;
       rodGeom2.attributes.position.needsUpdate = true;
-
+      
       // Update trail for Bob2 as a tube.
       const now = performance.now() / 1000;
       trailPoints.push({ position: new THREE.Vector3(body2.position.x, body2.position.y, body2.position.z), time: now });
@@ -395,7 +434,8 @@
         trailMesh.geometry.dispose();
         trailMesh.geometry = tubeGeo;
       }
-
+      
+      // Render left view (top-down) and right view (side).
       renderer.setViewport(0, 0, window.innerWidth / 2, window.innerHeight);
       renderer.setScissor(0, 0, window.innerWidth / 2, window.innerHeight);
       renderer.render(scene, cameraLeft);
@@ -405,7 +445,12 @@
     }
     animate();
 
-    // Window resize handling.
+    // ------------------------------------------------------------------
+    // Window Resize Handler
+    // ------------------------------------------------------------------
+    /**
+     * Adjusts camera and renderer settings when the window is resized.
+     */
     window.addEventListener("resize", () => {
       renderer.setSize(window.innerWidth, window.innerHeight);
       const newAspect = (window.innerWidth / 2) / window.innerHeight;
