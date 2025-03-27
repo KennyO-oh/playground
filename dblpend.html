@@ -3,6 +3,18 @@
 <head>
   <meta charset="UTF-8">
   <title>3D Double Pendulum Simulation</title>
+  <!-- Import map shim -->
+  <script async src="https://unpkg.com/es-module-shims@1.8.0/dist/es-module-shims.js"></script>
+  <!-- Import map for ES modules -->
+  <script type="importmap">
+    {
+      "imports": {
+        "three": "https://cdn.jsdelivr.net/npm/three@0.150.1/build/three.module.js",
+        "cannon-es": "https://cdn.jsdelivr.net/npm/cannon-es@0.20.0/dist/cannon-es.js",
+        "lil-gui": "https://cdn.jsdelivr.net/npm/lil-gui@0.18/+esm"
+      }
+    }
+  </script>
   <style>
     body { margin: 0; overflow: hidden; }
     canvas { display: block; }
@@ -59,16 +71,6 @@
       z-index: 2;
     }
   </style>
-  <!-- Import maps for Three.js, cannon-es, and lil-gui -->
-  <script type="importmap">
-    {
-      "imports": {
-        "three": "https://cdn.jsdelivr.net/npm/three@0.150.1/build/three.module.js",
-        "cannon-es": "https://cdn.jsdelivr.net/npm/cannon-es@0.20.0/dist/cannon-es.js",
-        "lil-gui": "https://cdn.jsdelivr.net/npm/lil-gui@0.18/+esm"
-      }
-    }
-  </script>
 </head>
 <body>
   <!-- View headings, divider, and instructions -->
@@ -85,50 +87,36 @@
     import * as CANNON from "cannon-es";
     import { GUI } from "lil-gui";
 
-    // ------------------------------------------------------------------
-    // Global Simulation Parameters
-    // ------------------------------------------------------------------
+    // Global simulation parameters.
     const params = {
-      mass1: 2.0,   // Mass of the first bob.
-      mass2: 2.0,   // Mass of the second bob.
-      L1: 5.0,      // Length of the first string.
-      L2: 5.0,      // Length of the second string.
-      gravity: -9.81 // Gravity (ft/s²).
+      mass1: 2.0,
+      mass2: 2.0,
+      L1: 5.0,
+      L2: 5.0,
+      gravity: -9.81
     };
 
-    /**
-     * Calculates a bob's radius using a cube-root scaling rule.
-     * @param {number} mass - Mass of the bob.
-     * @returns {number} Calculated radius.
-     */
+    // Helper function that calculates a bob's radius using a cube-root scaling rule.
     const getBobRadius = (mass) => 0.5 * Math.cbrt(mass / 2.0);
+    // Trail duration in seconds.
+    const trailDuration = 5;
 
-    // ------------------------------------------------------------------
-    // Global Simulation Objects
-    // ------------------------------------------------------------------
+    // Global simulation objects.
     let pivotBody, body1, body2, constraint1, constraint2;
     let bobMesh1, bobMesh2, pivotMesh;
     let rodLine1, rodLine2, rodGeom1, rodGeom2;
-    const trailPoints = []; // Stores Bob2's positions for its trail.
-    const trailDuration = 5; // Duration (in seconds) for the trail.
+    const trailPoints = []; // Stores Bob2's recent positions.
 
     // Fixed pivot position and initial angle settings.
     const pivotPos = new CANNON.Vec3(0, 10, 0);
     const theta1 = Math.PI / 4, phi1 = Math.PI / 4;
     const theta2 = Math.PI / 3, phi2 = -Math.PI / 6;
 
-    // ------------------------------------------------------------------
-    // Scene and Background Setup
-    // ------------------------------------------------------------------
+    // THREE.js scene setup.
     const scene = new THREE.Scene();
     scene.background = new THREE.Color(0x000000);
 
-    /**
-     * Creates a starry background using random point positions.
-     * @param {number} count - Number of stars.
-     * @param {number} size - Star size.
-     * @returns {THREE.Points} The star field as a THREE.Points object.
-     */
+    // Create starry background.
     const createStarField = (count, size) => {
       const geometry = new THREE.BufferGeometry();
       const positions = [];
@@ -144,9 +132,7 @@
     scene.add(createStarField(1000, 0.7));
     scene.add(createStarField(500, 1.5));
 
-    // ------------------------------------------------------------------
-    // Camera Setup for Dual Views
-    // ------------------------------------------------------------------
+    // Camera setup.
     const aspectRight = (window.innerWidth / 2) / window.innerHeight;
     const cameraRight = new THREE.PerspectiveCamera(45, aspectRight, 0.1, 1000);
     cameraRight.position.set(0, 0, 20);
@@ -156,32 +142,26 @@
     cameraLeft.position.set(0, 60, 0);
     cameraLeft.lookAt(0, 0, 0);
 
-    // ------------------------------------------------------------------
-    // Renderer Setup
-    // ------------------------------------------------------------------
+    // Renderer setup.
     const renderer = new THREE.WebGLRenderer({ antialias: true });
     renderer.setSize(window.innerWidth, window.innerHeight);
     renderer.setScissorTest(true);
     document.body.appendChild(renderer.domElement);
 
-    // ------------------------------------------------------------------
-    // Lighting Setup
-    // ------------------------------------------------------------------
+    // Lighting.
     scene.add(new THREE.AmbientLight(0x404040));
     const directionalLight = new THREE.DirectionalLight(0xffffff, 1);
     directionalLight.position.set(10, 10, 10);
     scene.add(directionalLight);
 
-    // ------------------------------------------------------------------
-    // Physics World Setup (cannon-es)
-    // ------------------------------------------------------------------
+    // CANNON.js world setup.
     const world = new CANNON.World();
     world.gravity.set(0, params.gravity, 0);
     world.broadphase = new CANNON.NaiveBroadphase();
     world.solver.iterations = 10;
     let paused = false;
 
-    // Initialize physics objects.
+    // Initialize simulation objects.
     pivotBody = new CANNON.Body({ mass: 0, position: pivotPos.clone() });
     world.addBody(pivotBody);
     {
@@ -211,9 +191,7 @@
     constraint2 = new CANNON.DistanceConstraint(body1, body2, params.L2);
     world.addConstraint(constraint2);
 
-    // ------------------------------------------------------------------
-    // THREE.js Meshes Setup (Bobs, Pivot, Rods)
-    // ------------------------------------------------------------------
+    // Create THREE.js meshes.
     {
       const bobMat1 = new THREE.MeshPhongMaterial({ color: 0xff00ff });
       const bobMat2 = new THREE.MeshPhongMaterial({ color: 0x00ffff });
@@ -223,14 +201,15 @@
       scene.add(bobMesh1, bobMesh2);
       bobMesh1.scale.set(getBobRadius(params.mass1), getBobRadius(params.mass1), getBobRadius(params.mass1));
       bobMesh2.scale.set(getBobRadius(params.mass2), getBobRadius(params.mass2), getBobRadius(params.mass2));
-      // Create pivot mesh with fixed radius.
+
+      // The pivot mesh uses a fixed radius of 0.15.
       pivotMesh = new THREE.Mesh(
         new THREE.SphereGeometry(0.15, 16, 16),
         new THREE.MeshStandardMaterial({ color: 0xffffff, metalness: 1, roughness: 0.05, emissive: 0xffffff, emissiveIntensity: 1.0 })
       );
       scene.add(pivotMesh);
       pivotMesh.position.copy(pivotBody.position);
-      // Create rod lines between pivot and bob1, and bob1 and bob2.
+
       rodGeom1 = new THREE.BufferGeometry();
       rodGeom1.setAttribute('position', new THREE.Float32BufferAttribute([0, 0, 0, 0, 0, 0], 3));
       rodLine1 = new THREE.Line(rodGeom1, new THREE.LineBasicMaterial({ color: 0xffffff }));
@@ -241,10 +220,7 @@
       scene.add(rodLine2);
     }
 
-    // ------------------------------------------------------------------
-    // Trail Mesh Setup for Bob2
-    // ------------------------------------------------------------------
-    // Create an initial empty tube mesh for Bob2's trail.
+    // Create a tube mesh for Bob2's trail.
     let trailMesh = new THREE.Mesh(new THREE.BufferGeometry(), new THREE.MeshBasicMaterial({
       color: 0x00ffff,
       transparent: true,
@@ -252,22 +228,7 @@
     }));
     scene.add(trailMesh);
 
-    // ------------------------------------------------------------------
-    // Camera Setup for Dual Views
-    // ------------------------------------------------------------------
-    const aspectRight = (window.innerWidth / 2) / window.innerHeight;
-    const cameraRight = new THREE.PerspectiveCamera(45, aspectRight, 0.1, 1000);
-    cameraRight.position.set(0, 0, 20);
-    cameraRight.lookAt(0, 0, 0);
-    const aspectLeft = (window.innerWidth / 2) / window.innerHeight;
-    const cameraLeft = new THREE.PerspectiveCamera(45, aspectLeft, 0.1, 1000);
-    cameraLeft.position.set(0, 60, 0);
-    cameraLeft.lookAt(0, 0, 0);
-
-    /**
-     * Updates camera positions based on simulation extents.
-     * Repositions both left and right cameras to encompass the full pendulum motion.
-     */
+    // Function to update camera positions.
     const updateCameras = () => {
       const maxBobRadius = Math.max(getBobRadius(params.mass1), getBobRadius(params.mass2));
       const maxExtent = params.L1 + params.L2 + maxBobRadius;
@@ -278,9 +239,7 @@
     };
     updateCameras();
 
-    // ------------------------------------------------------------------
-    // GUI for Interactive Parameters
-    // ------------------------------------------------------------------
+    // GUI setup.
     const gui = new GUI();
     gui.add(params, 'mass1', 0.5, 10, 0.1).name('Bob 1 Mass').onChange(() => {
       const newRadius = getBobRadius(params.mass1);
@@ -316,9 +275,7 @@
     gui.domElement.style.left = "50%";
     gui.domElement.style.transform = "translateX(-50%)";
 
-    // ------------------------------------------------------------------
-    // Dragging Interaction for Repositioning Bobs
-    // ------------------------------------------------------------------
+    // Dragging interaction.
     const raycaster = new THREE.Raycaster();
     const mouse = new THREE.Vector2();
     let draggedBody = null;
@@ -327,10 +284,6 @@
     let activeCamera = null;
     const getActiveCamera = (clientX) => (clientX < window.innerWidth / 2 ? cameraLeft : cameraRight);
 
-    /**
-     * Handle mouse down events to initiate dragging of a bob.
-     * @param {MouseEvent} event - The mouse event.
-     */
     function onMouseDown(event) {
       event.preventDefault();
       const rect = renderer.domElement.getBoundingClientRect();
@@ -346,7 +299,6 @@
       if (intersects.length > 0) {
         const intersect = intersects[0];
         draggedBody = (intersect.object === bobMesh1) ? body1 : body2;
-        // Reset the other bob's velocity when dragging.
         if (draggedBody === body1) {
           body2.velocity.set(0, 0, 0);
           body2.angularVelocity.set(0, 0, 0);
@@ -366,10 +318,6 @@
       }
     }
 
-    /**
-     * Handle mouse move events to update the position of the dragged bob.
-     * @param {MouseEvent} event - The mouse event.
-     */
     function onMouseMove(event) {
       if (!draggedBody) return;
       event.preventDefault();
@@ -394,10 +342,6 @@
       }
     }
 
-    /**
-     * Handle mouse up events to release the dragged bob.
-     * @param {MouseEvent} event - The mouse event.
-     */
     function onMouseUp(event) {
       if (draggedBody) {
         draggedBody.type = CANNON.Body.DYNAMIC;
@@ -412,40 +356,30 @@
     renderer.domElement.addEventListener('mouseup', onMouseUp, false);
     renderer.domElement.addEventListener('mouseleave', onMouseUp, false);
 
-    // --- Double-click to Pause/Unpause ---
+    // Double-click to toggle pause/unpause.
     renderer.domElement.addEventListener('dblclick', () => {
       paused = !paused;
       console.log(paused ? "Simulation paused" : "Simulation resumed");
     });
 
-    // ------------------------------------------------------------------
-    // Animation Loop
-    // ------------------------------------------------------------------
+    // Animation loop.
     const timeStep = 1/60;
-    /**
-     * Main animation loop.
-     * Advances the physics simulation (if not paused), updates the bob meshes and rod geometries,
-     * updates the trail for Bob2, and renders the scene from two camera views.
-     */
     function animate() {
       requestAnimationFrame(animate);
       if (!paused) world.step(timeStep);
-      // Update bob positions from physics bodies.
       bobMesh1.position.copy(body1.position);
       bobMesh2.position.copy(body2.position);
-      
-      // Update rod geometries between pivot-body1 and body1-body2.
+      // Update rod geometries.
       const arr1 = rodGeom1.attributes.position.array;
       arr1[0] = pivotBody.position.x; arr1[1] = pivotBody.position.y; arr1[2] = pivotBody.position.z;
       arr1[3] = body1.position.x;    arr1[4] = body1.position.y;    arr1[5] = body1.position.z;
       rodGeom1.attributes.position.needsUpdate = true;
-      
       const arr2 = rodGeom2.attributes.position.array;
       arr2[0] = body1.position.x; arr2[1] = body1.position.y; arr2[2] = body1.position.z;
       arr2[3] = body2.position.x; arr2[4] = body2.position.y; arr2[5] = body2.position.z;
       rodGeom2.attributes.position.needsUpdate = true;
-      
-      // Update trail for Bob2.
+
+      // Update trail for Bob2 as a tube.
       const now = performance.now() / 1000;
       trailPoints.push({ position: new THREE.Vector3(body2.position.x, body2.position.y, body2.position.z), time: now });
       while (trailPoints.length && now - trailPoints[0].time > trailDuration) {
@@ -461,8 +395,7 @@
         trailMesh.geometry.dispose();
         trailMesh.geometry = tubeGeo;
       }
-      
-      // Render dual views.
+
       renderer.setViewport(0, 0, window.innerWidth / 2, window.innerHeight);
       renderer.setScissor(0, 0, window.innerWidth / 2, window.innerHeight);
       renderer.render(scene, cameraLeft);
@@ -472,12 +405,7 @@
     }
     animate();
 
-    // ------------------------------------------------------------------
-    // Handle Window Resize
-    // ------------------------------------------------------------------
-    /**
-     * Updates the renderer and camera parameters when the window is resized.
-     */
+    // Window resize handling.
     window.addEventListener("resize", () => {
       renderer.setSize(window.innerWidth, window.innerHeight);
       const newAspect = (window.innerWidth / 2) / window.innerHeight;
