@@ -15,6 +15,8 @@
       z-index: 10;
     }
   </style>
+  <!-- Import map shim -->
+  <script async src="https://unpkg.com/es-module-shims@1.8.0/dist/es-module-shims.js"></script>
   <!-- Import map for ES modules -->
   <script type="importmap">
     {
@@ -73,7 +75,9 @@
     floorBody.position.y = -10;
     world.addBody(floorBody);
 
-    // Arrays for storing meshes and physics bodies.
+    // ------------------------------------------------------------------
+    // Storage Arrays for Meshes and Bodies
+    // ------------------------------------------------------------------
     const pipeMeshes = [];
     const pipeBodies = [];
     const ballMeshes = [];
@@ -81,10 +85,10 @@
 
     /**
      * Creates and adds a pipe segment between two points.
-     * @param {THREE.Vector3} start
-     * @param {THREE.Vector3} end
-     * @param {number} radius
-     * @param {number} color
+     * @param {THREE.Vector3} start - Starting point.
+     * @param {THREE.Vector3} end - Ending point.
+     * @param {number} radius - Pipe radius.
+     * @param {number} color - Hex color for the pipe.
      */
     function addPipeSegment(start, end, radius, color) {
       const segmentVec = new THREE.Vector3().subVectors(end, start);
@@ -123,11 +127,11 @@
 
     /**
      * Generates a connected series of pipe segments via a random walk.
-     * @param {THREE.Vector3} startPos
-     * @param {number} numSegments
-     * @param {number} segmentLength
-     * @param {number} radius
-     * @param {number} color
+     * @param {THREE.Vector3} startPos - Starting position.
+     * @param {number} numSegments - Number of segments to create.
+     * @param {number} segmentLength - Length of each segment.
+     * @param {number} radius - Pipe radius.
+     * @param {number} color - Hex color for the segments.
      */
     function createPipeNetwork(startPos, numSegments, segmentLength, radius, color) {
       let currentPos = startPos.clone();
@@ -176,7 +180,9 @@
       }
     }
 
-    // Create pipe networks in groups with different colors.
+    // ------------------------------------------------------------------
+    // Create Ultra-Dense Pipe Networks, Grouped by Shared X and Z Coordinates
+    // ------------------------------------------------------------------
     // Group 1: Lone network at (0,30,0) → white.
     createPipeNetwork(new THREE.Vector3(0, 30, 0), 60, 3, 0.5, 0xffffff);
     // Group 2: Networks with (±2,30,±2) → soft orange.
@@ -189,7 +195,7 @@
     createPipeNetwork(new THREE.Vector3(4, 30, 4), 60, 3, 0.5, 0xffd700);
     createPipeNetwork(new THREE.Vector3(-4, 30, 4), 60, 3, 0.5, 0xffd700);
     createPipeNetwork(new THREE.Vector3(4, 30, -4), 60, 3, 0.5, 0xffd700);
-    // Group 4: Networks with (±6,30,±6) → violet
+    // Group 4: Networks with (±6,30,±6) → violet.
     createPipeNetwork(new THREE.Vector3(-6, 30, 6), 60, 3, 0.5, 0xffff00);
     createPipeNetwork(new THREE.Vector3(6, 30, 6), 60, 3, 0.5, 0x7f00ff);
     createPipeNetwork(new THREE.Vector3(-6, 30, 6), 60, 3, 0.5, 0x7f00ff);
@@ -205,7 +211,9 @@
     createPipeNetwork(new THREE.Vector3(-10, 30, 10), 60, 3, 0.5, 0x00ffff);
     createPipeNetwork(new THREE.Vector3(10, 30, -10), 60, 3, 0.5, 0x00ffff);
 
-    // Create 50 red bouncing balls.
+    // ------------------------------------------------------------------
+    // Create 50 Red Bouncing Balls
+    // ------------------------------------------------------------------
     for (let i = 0; i < 50; i++) {
       const r = 0.5;
       const geometry = new THREE.SphereGeometry(r, 32, 32);
@@ -230,7 +238,9 @@
       });
     }
 
-    // Toggle pipe materials between colored and metallic.
+    // ------------------------------------------------------------------
+    // Toggle Colors Functionality
+    // ------------------------------------------------------------------
     let useColoredMaterials = true;
     const toggleButton = document.getElementById("toggleButton");
     toggleButton.addEventListener("click", () => {
@@ -248,9 +258,8 @@
     // ------------------------------------------------------------------
     const timeStep = 1 / 60;
     /**
-     * The main animation loop.
-     * Advances the physics simulation, updates the positions and orientations
-     * of the ball meshes, and renders the scene.
+     * Advances the physics simulation, updates ball mesh positions,
+     * and renders the scene.
      */
     function animate() {
       requestAnimationFrame(animate);
@@ -271,8 +280,7 @@
     animate();
 
     /**
-     * Handle window resize events.
-     * Updates the camera aspect ratio and renderer size.
+     * Updates the camera and renderer on window resize.
      */
     window.addEventListener("resize", () => {
       camera.aspect = window.innerWidth / window.innerHeight;
