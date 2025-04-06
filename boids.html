@@ -1,0 +1,488 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>3D Starling Murmuration Simulation with Predator Toggle</title>
+  
+  <!-- Basic styling and sky gradient background -->
+  <style>
+    body {
+      margin: 0;
+      overflow: hidden;
+      background: linear-gradient(to bottom, #87CEEB, #fff);
+    }
+    canvas {
+      display: block;
+    }
+    #info {
+      position: absolute;
+      top: 10px;
+      width: 100%;
+      text-align: center;
+      color: white;
+      font-family: Arial, sans-serif;
+      z-index: 1;
+    }
+    #instructions {
+      position: absolute;
+      bottom: 10px;
+      width: 100%;
+      text-align: center;
+      font-family: Arial, sans-serif;
+      font-size: 18px;
+      color: black;
+      z-index: 1;
+    }
+  </style>
+  
+  <!-- Import map shim for browsers without native support -->
+  <script async src="https://unpkg.com/es-module-shims@1.8.0/dist/es-module-shims.js"></script>
+  
+  <!-- External dependencies -->
+  <script type="importmap">
+    {
+      "imports": {
+        "three": "https://unpkg.com/three@0.160.0/build/three.module.js",
+        "three/addons/": "https://unpkg.com/three@0.160.0/examples/jsm/",
+        "dat.gui": "https://unpkg.com/dat.gui@0.7.9/build/dat.gui.module.js"
+      }
+    }
+  </script>
+</head>
+<body>
+  <div id="info">3D Starling Murmuration Simulation with Predator Toggle</div>
+  <div id="instructions">(Click and drag to rotate view, double-click to reset view)</div>
+  
+  <script type="module">
+    // Import required modules.
+    import * as THREE from 'three';
+    import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+    import { GUI } from 'dat.gui';
+
+    /* =======================
+       Scene, Camera, Renderer Setup
+       ======================= */
+    const scene = new THREE.Scene();
+    const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
+    renderer.setSize(window.innerWidth, window.innerHeight);
+    // Use a transparent clear color so the CSS sky gradient is visible.
+    renderer.setClearColor(0x000000, 0);
+    document.body.appendChild(renderer.domElement);
+
+    // Set the default camera position.
+    const defaultCameraPosition = new THREE.Vector3(0, 120, 600);
+    const camera = new THREE.PerspectiveCamera(
+      75, window.innerWidth / window.innerHeight, 0.1, 2000
+    );
+    camera.position.copy(defaultCameraPosition);
+
+    // Setup orbit controls.
+    const controls = new OrbitControls(camera, renderer.domElement);
+    controls.enableDamping = true;
+
+    // Add basic lighting.
+    const ambientLight = new THREE.AmbientLight(0xffffff, 0.5);
+    scene.add(ambientLight);
+    const directionalLight = new THREE.DirectionalLight(0xffffff, 1);
+    directionalLight.position.set(100, 100, 50);
+    scene.add(directionalLight);
+
+    /* =======================
+       Simulation Parameters and Utility Functions
+       ======================= */
+    // Parameters for boid behavior.
+    // Slider values range from 0-5 and are mapped to simulation values:
+    //   cohesion: 0–5 maps to 0–2,
+    //   alignment: 0–5 maps to 0–3,
+    //   separation: 0–5 maps to 1–4.
+    const params = {
+      cohesion: 2.5,
+      alignment: 2.5,
+      separation: 2.5,
+      visualRange: 50,
+      numBoids: 100
+    };
+    const defaultParams = { ...params };
+
+    /**
+     * Maps a slider value (0-5) to the cohesion range (0-2).
+     * @param {number} val - Slider value.
+     * @returns {number} Scaled cohesion value.
+     */
+    function scaleCohesion(val) {
+      return (val / 5) * 2;
+    }
+
+    /**
+     * Maps a slider value (0-5) to the alignment range (0-3).
+     * @param {number} val - Slider value.
+     * @returns {number} Scaled alignment value.
+     */
+    function scaleAlignment(val) {
+      return (val / 5) * 3;
+    }
+
+    /**
+     * Maps a slider value (0-5) to the separation range (1-4).
+     * @param {number} val - Slider value.
+     * @returns {number} Scaled separation value.
+     */
+    function scaleSeparation(val) {
+      return (val / 5) * 3 + 1;
+    }
+
+    // Boid physics constants.
+    const maxSpeed = 4;
+    const maxForce = 0.05;
+    const simulationBounds = 250;
+    const margin = 50;
+    const boids = [];
+
+    // Boid mesh: a cone geometry that points forward.
+    const boidGeometry = new THREE.ConeGeometry(2, 8, 8);
+    boidGeometry.rotateX(Math.PI / 2);
+    const boidMaterial = new THREE.MeshStandardMaterial({ color: 0x558cf4 });
+
+    /**
+     * Limits the length of a vector to a maximum value.
+     * @param {THREE.Vector3} vector - The vector to limit.
+     * @param {number} max - The maximum allowed length.
+     */
+    function limitVector(vector, max) {
+      if (vector.length() > max) {
+        vector.setLength(max);
+      }
+    }
+
+    /* =======================
+       Boid Class Definition
+       ======================= */
+    class Boid {
+      constructor() {
+        // Initialize boid at a random position within the simulation bounds.
+        this.position = new THREE.Vector3(
+          (Math.random() - 0.5) * simulationBounds * 2,
+          (Math.random() - 0.5) * simulationBounds * 2,
+          (Math.random() - 0.5) * simulationBounds * 2
+        );
+        // Assign a random initial velocity.
+        this.velocity = new THREE.Vector3(
+          (Math.random() - 0.5) * 2,
+          (Math.random() - 0.5) * 2,
+          (Math.random() - 0.5) * 2
+        );
+        this.acceleration = new THREE.Vector3();
+        // Create and add the boid mesh to the scene.
+        this.mesh = new THREE.Mesh(boidGeometry, boidMaterial);
+        this.mesh.position.copy(this.position);
+        scene.add(this.mesh);
+      }
+      
+      /**
+       * Computes the cohesion steering force toward the average position of nearby boids.
+       * @param {Boid[]} boids - Array of all boids.
+       * @returns {THREE.Vector3} Cohesion steering force.
+       */
+      cohesion(boids) {
+        const steering = new THREE.Vector3();
+        let total = 0;
+        for (const other of boids) {
+          const d = this.position.distanceTo(other.position);
+          if (other !== this && d < params.visualRange) {
+            steering.add(other.position);
+            total++;
+          }
+        }
+        if (total > 0) {
+          steering.divideScalar(total);
+          steering.sub(this.position);
+          steering.normalize();
+          steering.multiplyScalar(maxSpeed);
+          steering.sub(this.velocity);
+          limitVector(steering, maxForce);
+        }
+        return steering;
+      }
+      
+      /**
+       * Computes the alignment steering force to match the average velocity of nearby boids.
+       * @param {Boid[]} boids - Array of all boids.
+       * @returns {THREE.Vector3} Alignment steering force.
+       */
+      alignment(boids) {
+        const steering = new THREE.Vector3();
+        let total = 0;
+        for (const other of boids) {
+          const d = this.position.distanceTo(other.position);
+          if (other !== this && d < params.visualRange) {
+            steering.add(other.velocity);
+            total++;
+          }
+        }
+        if (total > 0) {
+          steering.divideScalar(total);
+          steering.normalize();
+          steering.multiplyScalar(maxSpeed);
+          steering.sub(this.velocity);
+          limitVector(steering, maxForce);
+        }
+        return steering;
+      }
+      
+      /**
+       * Computes the separation steering force to avoid crowding with nearby boids.
+       * @param {Boid[]} boids - Array of all boids.
+       * @returns {THREE.Vector3} Separation steering force.
+       */
+      separation(boids) {
+        const steering = new THREE.Vector3();
+        let total = 0;
+        for (const other of boids) {
+          const d = this.position.distanceTo(other.position);
+          if (other !== this && d < params.visualRange / 2) {
+            const diff = new THREE.Vector3().subVectors(this.position, other.position);
+            diff.divideScalar(d);
+            steering.add(diff);
+            total++;
+          }
+        }
+        if (total > 0) {
+          steering.divideScalar(total);
+          steering.normalize();
+          steering.multiplyScalar(maxSpeed);
+          steering.sub(this.velocity);
+          limitVector(steering, maxForce);
+        }
+        return steering;
+      }
+      
+      /**
+       * Updates the boid's position, velocity, and orientation.
+       * Applies cohesion, alignment, separation, and flee behaviors.
+       * @param {Boid[]} boids - Array of all boids.
+       */
+      update(boids) {
+        const cohesionForce = this.cohesion(boids).multiplyScalar(scaleCohesion(params.cohesion));
+        const alignmentForce = this.alignment(boids).multiplyScalar(scaleAlignment(params.alignment));
+        const separationForce = this.separation(boids).multiplyScalar(scaleSeparation(params.separation));
+        
+        this.acceleration.add(cohesionForce);
+        this.acceleration.add(alignmentForce);
+        this.acceleration.add(separationForce);
+        
+        // Flee behavior: steer away from the predator if it is nearby.
+        const fleeDistance = 150;
+        if (predator) {
+          const d = this.position.distanceTo(predator.position);
+          if (d < fleeDistance) {
+            let fleeVector = this.position.clone().sub(predator.position).normalize();
+            const fleeStrength = 2;
+            fleeVector.multiplyScalar((fleeDistance - d) / fleeDistance * fleeStrength);
+            this.acceleration.add(fleeVector);
+          }
+        }
+        
+        // Update velocity and position.
+        this.velocity.add(this.acceleration);
+        limitVector(this.velocity, maxSpeed);
+        this.position.add(this.velocity);
+        this.acceleration.set(0, 0, 0);
+        
+        // Boundary steering.
+        const desired = new THREE.Vector3();
+        if (this.position.x < -simulationBounds + margin) desired.x = maxSpeed;
+        else if (this.position.x > simulationBounds - margin) desired.x = -maxSpeed;
+        if (this.position.y < -simulationBounds + margin) desired.y = maxSpeed;
+        else if (this.position.y > simulationBounds - margin) desired.y = -maxSpeed;
+        if (this.position.z < -simulationBounds + margin) desired.z = maxSpeed;
+        else if (this.position.z > simulationBounds - margin) desired.z = -maxSpeed;
+        if (desired.length() > 0) {
+          desired.normalize();
+          desired.multiplyScalar(maxSpeed);
+          const steer = new THREE.Vector3().subVectors(desired, this.velocity);
+          limitVector(steer, maxForce * 2);
+          this.acceleration.add(steer);
+        }
+        
+        // Update mesh position.
+        this.mesh.position.copy(this.position);
+        
+        // Smoothly update orientation to align with velocity.
+        if (this.velocity.lengthSq() > 0.0001) {
+          const desiredDirection = this.velocity.clone().normalize();
+          const desiredQuat = new THREE.Quaternion().setFromUnitVectors(new THREE.Vector3(0, 0, 1), desiredDirection);
+          const currentForward = new THREE.Vector3(0, 0, 1).applyQuaternion(this.mesh.quaternion);
+          const angleDiff = currentForward.angleTo(desiredDirection);
+          const maxTurnAngle = Math.PI / 12; // 15° per frame.
+          let t = (angleDiff > maxTurnAngle) ? maxTurnAngle / angleDiff : 1;
+          this.mesh.quaternion.slerp(desiredQuat, t);
+        }
+      }
+    }
+
+    /**
+     * Updates the number of boids in the simulation.
+     */
+    function updateNumBoids() {
+      const difference = params.numBoids - boids.length;
+      if (difference > 0) {
+        for (let i = 0; i < difference; i++) {
+          boids.push(new Boid());
+        }
+      } else if (difference < 0) {
+        for (let i = 0; i < -difference; i++) {
+          const b = boids.pop();
+          scene.remove(b.mesh);
+        }
+      }
+    }
+    updateNumBoids();
+
+    /* =======================
+       Predator Class Definition
+       ======================= */
+    // Predator parameters.
+    const predatorMaxSpeed = 5;
+    const predatorMaxForce = 0.03;
+    const predatorMaxTurnAngle = Math.PI / 36; // Approximately 5° per frame.
+    let predator = null;
+
+    class Predator {
+      constructor() {
+        // Initialize predator at a random position.
+        this.position = new THREE.Vector3(
+          (Math.random() - 0.5) * simulationBounds * 2,
+          (Math.random() - 0.5) * simulationBounds * 2,
+          (Math.random() - 0.5) * simulationBounds * 2
+        );
+        this.velocity = new THREE.Vector3(
+          (Math.random() - 0.5) * 2,
+          (Math.random() - 0.5) * 2,
+          (Math.random() - 0.5) * 2
+        );
+        this.acceleration = new THREE.Vector3();
+        // Create predator mesh: a red cone with dimensions (5, 20, 20).
+        const predatorGeometry = new THREE.ConeGeometry(5, 20, 20);
+        predatorGeometry.rotateX(Math.PI / 2);
+        const predatorMaterial = new THREE.MeshStandardMaterial({ color: 0xff0000 });
+        this.mesh = new THREE.Mesh(predatorGeometry, predatorMaterial);
+        this.mesh.position.copy(this.position);
+        scene.add(this.mesh);
+      }
+      
+      /**
+       * Updates the predator's position, velocity, and orientation.
+       * Chases the closest boid.
+       * @param {Boid[]} boids - Array of all boids.
+       */
+      update(boids) {
+        // Find the closest boid.
+        let target = null;
+        let minDist = Infinity;
+        for (const boid of boids) {
+          const d = this.position.distanceTo(boid.position);
+          if (d < minDist) {
+            minDist = d;
+            target = boid;
+          }
+        }
+        if (target) {
+          // Steer toward the target.
+          const desired = target.position.clone().sub(this.position).normalize().multiplyScalar(predatorMaxSpeed);
+          const steer = desired.clone().sub(this.velocity);
+          limitVector(steer, predatorMaxForce);
+          this.acceleration.add(steer);
+        }
+        
+        // Update velocity and position.
+        this.velocity.add(this.acceleration);
+        limitVector(this.velocity, predatorMaxSpeed);
+        this.position.add(this.velocity);
+        this.acceleration.set(0, 0, 0);
+        this.mesh.position.copy(this.position);
+        
+        // Smoothly update orientation (with lower agility).
+        if (this.velocity.lengthSq() > 0.0001) {
+          const desiredDirection = this.velocity.clone().normalize();
+          const desiredQuat = new THREE.Quaternion().setFromUnitVectors(new THREE.Vector3(0, 0, 1), desiredDirection);
+          const currentForward = new THREE.Vector3(0, 0, 1).applyQuaternion(this.mesh.quaternion);
+          const angleDiff = currentForward.angleTo(desiredDirection);
+          let t = (angleDiff > predatorMaxTurnAngle) ? predatorMaxTurnAngle / angleDiff : 1;
+          this.mesh.quaternion.slerp(desiredQuat, t);
+        }
+      }
+    }
+
+    /* =======================
+       Dat.GUI Controls Setup
+       ======================= */
+    const gui = new GUI();
+    const controllers = {};
+    controllers.cohesion = gui.add(params, 'cohesion', 0, 5, 0.1).name('Cohesion');
+    controllers.alignment = gui.add(params, 'alignment', 0, 5, 0.1).name('Alignment');
+    controllers.separation = gui.add(params, 'separation', 0, 5, 0.1).name('Separation');
+    controllers.visualRange = gui.add(params, 'visualRange', 10, 200, 1).name('Visual Range');
+    controllers.numBoids = gui.add(params, 'numBoids', 10, 1000, 1)
+      .name('Number of Boids')
+      .onChange(updateNumBoids);
+    
+    // Toggle for predator: when true, create predator; when false, remove it.
+    const predatorSettings = { predatorOn: false };
+    gui.add(predatorSettings, 'predatorOn').name('Predator').onChange((value) => {
+      if (value) {
+        if (!predator) {
+          predator = new Predator();
+        }
+      } else {
+        if (predator) {
+          scene.remove(predator.mesh);
+          predator = null;
+        }
+      }
+    });
+    
+    // Reset Defaults button to restore parameters.
+    gui.add({ resetDefaults: () => {
+      params.cohesion = defaultParams.cohesion;
+      params.alignment = defaultParams.alignment;
+      params.separation = defaultParams.separation;
+      params.visualRange = defaultParams.visualRange;
+      params.numBoids = defaultParams.numBoids;
+      for (const key in controllers) {
+        controllers[key].updateDisplay();
+      }
+      updateNumBoids();
+    }}, 'resetDefaults').name('Reset Defaults');
+
+    /* =======================
+       Animation and Event Listeners
+       ======================= */
+    /**
+     * Main animation loop.
+     */
+    function animate() {
+      requestAnimationFrame(animate);
+      boids.forEach(boid => boid.update(boids));
+      if (predator) predator.update(boids);
+      controls.update();
+      renderer.render(scene, camera);
+    }
+    animate();
+
+    // Adjust camera and renderer on window resize.
+    window.addEventListener('resize', () => {
+      camera.aspect = window.innerWidth / window.innerHeight;
+      camera.updateProjectionMatrix();
+      renderer.setSize(window.innerWidth, window.innerHeight);
+    });
+
+    // Reset camera position and control target on double-click.
+    window.addEventListener('dblclick', () => {
+      camera.position.copy(defaultCameraPosition);
+      controls.target.set(0, 0, 0);
+      controls.update();
+    });
+  </script>
+</body>
+</html>
