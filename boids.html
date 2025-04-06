@@ -273,12 +273,12 @@
         this.acceleration.add(separationForce);
         
         // Flee behavior: steer away from the predator if it is nearby.
-        const fleeDistance = 150;
+        const fleeDistance = 100;
         if (predator) {
           const d = this.position.distanceTo(predator.position);
           if (d < fleeDistance) {
             let fleeVector = this.position.clone().sub(predator.position).normalize();
-            const fleeStrength = 2;
+            const fleeStrength = 1.5;
             fleeVector.multiplyScalar((fleeDistance - d) / fleeDistance * fleeStrength);
             this.acceleration.add(fleeVector);
           }
