@@ -1,0 +1,716 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>3D Particle Cannon Simulation</title>
+
+  <style>
+    body {
+      margin: 0;
+      overflow: hidden;
+      background: linear-gradient(to bottom, #87CEEB, #E6E6FA);
+    }
+    canvas {
+      display: block;
+    }
+    /* Container for text overlays (Angle and Distance displays) */
+    #statusOverlay {
+      position: absolute;
+      top: 10%;
+      left: 0;
+      width: 100%;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      z-index: 10;
+      pointer-events: none;
+      color: black;
+      font-family: Arial, sans-serif;
+      font-size: 24px;
+      text-shadow: 1px 1px 2px white;
+    }
+    #statusOverlay div {
+      margin-bottom: 5px;
+    }
+    /* Information text at the bottom of the page */
+    #info {
+      position: absolute;
+      bottom: 5%;
+      width: 100%;
+      text-align: center;
+      z-index: 10;
+      pointer-events: none;
+      color: white;
+      font-family: Arial, sans-serif;
+      font-size: 18px;
+      text-shadow: 1px 1px 2px black;
+    }
+    .dg.main { top: 0; right: 0; }
+  </style>
+
+  <!-- Load module shims and configure module import maps -->
+  <script async src="https://unpkg.com/es-module-shims@1.8.0/dist/es-module-shims.js"></script>
+
+  <script type="importmap">
+    {
+      "imports": {
+        "three": "https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js",
+        "cannon-es": "https://unpkg.com/cannon-es@0.20.0/dist/cannon-es.js",
+        "dat.gui": "https://unpkg.com/dat.gui@0.7.9/build/dat.gui.module.js"
+      }
+    }
+  </script>
+</head>
+<body>
+  <div id="statusOverlay">
+    <div id="angleDisplay">Angle: ---°</div>
+    <div id="distanceDisplay">Distance: ---</div>
+  </div>
+
+  <div id="info">
+    Use ARROW KEYS to rotate and tilt the cannon barrel. Press SPACE to fire.
+  </div>
+
+  <script type="module">
+    // ===================== Module Imports =====================
+    import * as THREE from 'three';
+    import { World, Body, Sphere, Plane, Vec3, Material, ContactMaterial, Box, Cylinder, Quaternion as CannonQuaternion } from 'cannon-es';
+    import { GUI } from 'dat.gui';
+
+    // ===================== THREE.js Setup =====================
+    // Create the scene, renderer and camera for the 3D environment.
+    const scene = new THREE.Scene();
+    
+    // Create renderer with alpha so that the CSS sky gradient shows.
+    const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
+    renderer.setSize(window.innerWidth, window.innerHeight);
+    renderer.setClearColor(0x000000, 0); // Transparent clear color.
+    document.body.appendChild(renderer.domElement);
+
+    // Parameters for an orbital camera view.
+    const cameraOrbitRadius = 15.0;
+    const cameraHeight = 5.0;
+    const cameraTarget = new THREE.Vector3(0, 1, 0);
+    const camera = new THREE.PerspectiveCamera(75, window.innerWidth / window.innerHeight, 0.1, 1000);
+
+    // Add ambient and directional lighting to illuminate the scene.
+    const ambientLight = new THREE.AmbientLight(0xffffff, 0.6);
+    scene.add(ambientLight);
+    const directionalLight = new THREE.DirectionalLight(0xffffff, 0.9);
+    directionalLight.position.set(10, 15, 10);
+    scene.add(directionalLight);
+
+    // ===================== Cannon‑ES Physics Setup =====================
+    // Initialize the physics world with gravity similar to Earth.
+    const world = new World();
+    world.gravity.set(0, -9.82, 0);
+    world.solver.iterations = 10;  // Iterations per physics update for stability
+
+    // Define distinct physics materials for different simulation objects.
+    const groundMaterial = new Material('groundMaterial');
+    const particleMaterial = new Material('particleMaterial');
+    const cubeWallMaterial = new Material('cubeWallMaterial');
+
+    // Set up material contact properties that mimic realistic interactions.
+    world.addContactMaterial(new ContactMaterial(groundMaterial, particleMaterial, { friction: 0.9, restitution: 0.01 }));
+    world.addContactMaterial(new ContactMaterial(particleMaterial, cubeWallMaterial, { friction: 0.5, restitution: 0.6 }));
+    world.addContactMaterial(new ContactMaterial(groundMaterial, cubeWallMaterial, { friction: 0.7, restitution: 0.1 }));
+    world.defaultContactMaterial.friction = 0.3;
+    world.defaultContactMaterial.restitution = 0.05;
+
+    // ===================== Ground Setup =====================
+    // Visual representation of the ground.
+    const groundPlaneGeometry = new THREE.PlaneGeometry(500, 500);
+    const groundMaterialVisual = new THREE.MeshStandardMaterial({ color: 0x30a600 });
+    const groundMesh = new THREE.Mesh(groundPlaneGeometry, groundMaterialVisual);
+    groundMesh.rotation.x = -Math.PI / 2; // Make the plane horizontal.
+    scene.add(groundMesh);
+
+    // Create a static physics body for the ground to interact with projectiles and walls.
+    const groundBody = new Body({ mass: 0, shape: new Plane(), material: groundMaterial });
+    groundBody.quaternion.setFromEuler(-Math.PI / 2, 0, 0);
+    world.addBody(groundBody);
+
+    // ===================== Simulation Parameters =====================
+    // Initial parameters for the cannon, projectile, and wall distances.
+    const params = {
+      barrelLength: 6,
+      barrelDiameter: 1,
+      sphereDiameter: 1,  // Diameter of the projectile; ensures barrel diameter is adjusted if needed.
+      wallDistanceNegZ: 25,
+      wallDistancePosZ: 100,
+      wallDistancePosX: 50,
+      wallDistanceNegX: 200,
+    };
+
+    // ===================== GUI Setup for Cannon Parameters =====================
+    // Use dat.gui to interactively tune the simulation parameters.
+    const gui = new GUI();
+    // Helper function to find a controller for a given property; useful for dynamic updates.
+    const findController = (folder, property) => folder.__controllers.find(c => c.property === property);
+
+    // These GUI entries update the cannon geometry on change. The sphereDiameter is coupled to the barrelDiameter.
+    gui.add(params, 'barrelLength', 3, 12).name('Barrel Length').onChange(updateCannonGeometry);
+    gui.add(params, 'barrelDiameter', 0.5, 2).name('Barrel Diameter').onChange(updateCannonGeometry);
+    gui.add(params, 'sphereDiameter', 0.5, 2).name('Sphere Diameter').onChange(() => {
+      if (params.sphereDiameter > params.barrelDiameter) {
+        // Automatically adjust barrel diameter to accommodate the projectile.
+        params.barrelDiameter = params.sphereDiameter;
+        const barrelController = findController(gui, 'barrelDiameter');
+        if (barrelController) barrelController.setValue(params.barrelDiameter);
+      }
+      updateCannonGeometry();
+    });
+
+    // ===================== Wall Management =====================
+    // Configuration for wall zones; each zone has a center and rotation to determine cube placement.
+    const wallConfigs = [
+      { zoneIndex: 0, name: '-Z', distance: params.wallDistanceNegZ, center: [0, -params.wallDistanceNegZ], rotation: Math.PI },
+      { zoneIndex: 1, name: '+X', distance: params.wallDistancePosX, center: [params.wallDistancePosX, 0], rotation: -Math.PI / 2 },
+      { zoneIndex: 2, name: '+Z', distance: params.wallDistancePosZ, center: [0, params.wallDistancePosZ], rotation: 0 },
+      { zoneIndex: 3, name: '-X', distance: params.wallDistanceNegX, center: [-params.wallDistanceNegX, 0], rotation: Math.PI / 2 },
+    ];
+    // Define base and center colors for wall cubes to visually differentiate zones.
+    const wallBaseColors = [0x00ffff, 0xff00ff, 0x0000ff, 0xffffff];
+    const wallCenterColors = [0xff0000, 0x00ff00, 0xffff00, 0x000000];
+
+    // Container for the active wall and its associated cubes.
+    let activeWall = null;
+    // Wall dimensions: number of cubes along width, height and depth.
+    const cubeSize = 2;
+    const wallWidthCount = 10;
+    const wallHeightCount = 5;
+    const wallDepthCount = 2;
+
+    // Shared geometry and outline for wall cubes helps improve performance.
+    const outlineMaterial = new THREE.LineBasicMaterial({ color: 0x000000 });
+    const sharedCubeGeometry = new THREE.BoxGeometry(cubeSize, cubeSize, cubeSize);
+    const sharedOutlineGeometry = new THREE.EdgesGeometry(sharedCubeGeometry);
+
+    /**
+     * Clears the currently active wall by removing all associated cube meshes and physics bodies.
+     */
+    function clearActiveWall() {
+      if (activeWall) {
+        activeWall.cubes.forEach(cube => {
+          scene.remove(cube.mesh);
+          cube.mesh.material.dispose();
+          world.removeBody(cube.body);
+        });
+        activeWall = null;
+      }
+    }
+
+    /**
+     * Creates a wall from individual cubes based on provided parameters.
+     *
+     * Computes each cube's position in the wall (including a center region with contrasting color)
+     * and creates both the visual mesh and the corresponding physics body.
+     *
+     * @param {number} centerX - X coordinate for the wall center.
+     * @param {number} centerZ - Z coordinate for the wall center.
+     * @param {number} width - Number of cubes horizontally.
+     * @param {number} height - Number of cubes vertically.
+     * @param {number} depth - Number of cubes in depth.
+     * @param {number} cubeSize - Size of each cube.
+     * @param {number} yRotation - Rotation angle (radians) for orienting the wall.
+     * @param {number} zoneIndex - Wall zone index (for selecting colors).
+     * @param {Material} physicsMaterial - Physics material for cubes.
+     * @param {Array} targetArray - Array to store the created cube objects.
+     */
+    function createWall(centerX, centerZ, width, height, depth, cubeSize, yRotation, zoneIndex, physicsMaterial, targetArray) {
+      const wallStartY = cubeSize / 2;
+      const halfExtents = new Vec3(cubeSize / 2, cubeSize / 2, cubeSize / 2);
+      const cubeShape = new Box(halfExtents);
+      const rotationQuat = new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0, 1, 0), yRotation);
+      // For physics, use a cannon-es Quaternion.
+      const cannonRotationQuat = new CannonQuaternion().setFromAxisAngle(new Vec3(0, 1, 0), yRotation);
+      const startOffsetX = - (width * cubeSize) / 2 + cubeSize / 2;
+      const startOffsetZ = - (depth * cubeSize) / 2 + cubeSize / 2;
+      const localPos = new THREE.Vector3();
+
+      // Define boundaries for a contrasting center region.
+      const centerWidthStart = Math.floor(width / 2) - 2;
+      const centerWidthEnd = Math.floor(width / 2) + 1;
+      const centerHeightStart = Math.floor(height / 2) - 1;
+      const centerHeightEnd = Math.floor(height / 2) + 1;
+
+      const baseColorHex = wallBaseColors[zoneIndex] ?? 0xcccccc;
+      const centerColorHex = wallCenterColors[zoneIndex] ?? 0x333333;
+
+      // Loop through cube positions to create the wall.
+      for (let i = 0; i < width; i++) {
+        for (let j = 0; j < height; j++) {
+          for (let k = 0; k < depth; k++) {
+            localPos.set(startOffsetX + i * cubeSize, wallStartY + j * cubeSize, startOffsetZ + k * cubeSize);
+            // Apply the wall rotation.
+            localPos.applyQuaternion(rotationQuat);
+            const worldX = centerX + localPos.x;
+            const worldY = localPos.y;
+            const worldZ = centerZ + localPos.z;
+            // Use a contrasting color for center cubes.
+            const isCenter = (i >= centerWidthStart && i <= centerWidthEnd && j >= centerHeightStart && j <= centerHeightEnd);
+            const finalColorHex = isCenter ? centerColorHex : baseColorHex;
+
+            // Create cube mesh with outline.
+            const cubeMaterialVisual = new THREE.MeshStandardMaterial({
+              color: finalColorHex,
+              polygonOffset: true,
+              polygonOffsetFactor: 1,
+              polygonOffsetUnits: 1
+            });
+            const cubeMesh = new THREE.Mesh(sharedCubeGeometry, cubeMaterialVisual);
+            cubeMesh.position.set(worldX, worldY, worldZ);
+            cubeMesh.quaternion.copy(rotationQuat);
+            const outline = new THREE.LineSegments(sharedOutlineGeometry, outlineMaterial);
+            cubeMesh.add(outline);
+            scene.add(cubeMesh);
+
+            // Create corresponding physics body.
+            const cubeBody = new Body({
+              mass: 1,
+              shape: cubeShape,
+              position: new Vec3(worldX, worldY, worldZ),
+              material: physicsMaterial,
+              quaternion: cannonRotationQuat
+            });
+            world.addBody(cubeBody);
+            targetArray.push({ mesh: cubeMesh, body: cubeBody });
+          }
+        }
+      }
+    }
+
+    /**
+     * Builds a new wall for a specified zone.
+     * Creates a new wall only if the provided zone index differs from the active wall.
+     *
+     * @param {number} zoneIndex - The wall zone index.
+     */
+    function buildWall(zoneIndex) {
+      if (activeWall && activeWall.zoneIndex === zoneIndex) return;
+      clearActiveWall();
+      const config = wallConfigs[zoneIndex];
+      if (!config) return;
+      const wallCubeData = [];
+      createWall(
+        config.center[0], config.center[1], wallWidthCount, wallHeightCount, wallDepthCount,
+        cubeSize, config.rotation, config.zoneIndex, cubeWallMaterial, wallCubeData
+      );
+      activeWall = { zoneIndex: zoneIndex, cubes: wallCubeData };
+    }
+
+    /**
+     * Determines the wall zone index from the cannon's visual yaw.
+     * Normalizes the yaw angle and compares it to fixed boundaries.
+     *
+     * @param {number} visualYaw - The visual yaw angle in radians.
+     * @returns {number} The corresponding wall zone index.
+     */
+    function getZoneIndexFromYaw(visualYaw) {
+      const twoPi = Math.PI * 2;
+      const normalizedYaw = ((visualYaw % twoPi) + twoPi) % twoPi;
+      const b1 = Math.PI / 4, b2 = 3 * Math.PI / 4, b3 = 5 * Math.PI / 4, b4 = 7 * Math.PI / 4;
+      if (normalizedYaw >= b4 || normalizedYaw < b1) return 1;  // +X zone
+      else if (normalizedYaw >= b1 && normalizedYaw < b2) return 0; // -Z zone
+      else if (normalizedYaw >= b2 && normalizedYaw < b3) return 3; // -X zone
+      else return 2; // +Z zone
+    }
+
+    /**
+     * Checks the cannon's current yaw against the active wall zone.
+     * If there is a change in zone, builds a new wall with the updated configuration.
+     */
+    function checkAndUpdateWall() {
+      const visualYaw = -cannonYaw;
+      const newZoneIndex = getZoneIndexFromYaw(visualYaw);
+      if (!activeWall || newZoneIndex !== activeWall.zoneIndex) {
+        buildWall(newZoneIndex);
+      }
+    }
+
+    // ===================== Cannon Setup =====================
+    // Establish groups for separate rotations: cannon base (yaw) and barrel (pitch).
+    const cannonGroup = new THREE.Group();
+    scene.add(cannonGroup);
+    const barrelGroup = new THREE.Group();
+    cannonGroup.add(barrelGroup);
+
+    // Variables for visual and physics representations of the cannon.
+    let cannonBaseMesh, barrelMesh;
+    let cannonBaseBody, cannonBarrelBody;
+
+    // Initial angles (radians) for cannon yaw and pitch.
+    let cannonYaw = -Math.PI / 2;
+    let cannonPitch = Math.PI / 8;
+
+    /**
+     * Updates the cannon's visual orientation and synchronizes its physics bodies.
+     * Applies yaw to cannonGroup and pitch to barrelGroup, then updates physics and wall.
+     */
+    function updateCannonOrientation() {
+      cannonGroup.rotation.y = -cannonYaw;
+      barrelGroup.rotation.z = cannonPitch;
+      updateCannonPhysicsBodies();
+      checkAndUpdateWall();
+    }
+
+    // Temporary objects to avoid recreating vectors during physics synchronization.
+    const tempWorldPos = new THREE.Vector3();
+    const tempWorldQuat = new THREE.Quaternion();
+
+    /**
+     * Synchronizes cannon physics bodies with the current world transforms of the visual meshes.
+     * Updates positions and orientations for both the base and the barrel.
+     */
+    function updateCannonPhysicsBodies() {
+      if (cannonBaseBody && cannonBaseMesh) {
+        cannonBaseMesh.getWorldPosition(tempWorldPos);
+        cannonBaseMesh.getWorldQuaternion(tempWorldQuat);
+        cannonBaseBody.position.copy(tempWorldPos);
+        cannonBaseBody.quaternion.copy(tempWorldQuat);
+      }
+      if (cannonBarrelBody && barrelGroup) {
+        barrelGroup.getWorldPosition(tempWorldPos);
+        barrelGroup.getWorldQuaternion(tempWorldQuat);
+        cannonBarrelBody.position.copy(tempWorldPos);
+        cannonBarrelBody.quaternion.copy(tempWorldQuat);
+      }
+    }
+
+    /**
+     * Rebuilds the cannon's visual geometry and its corresponding physics bodies.
+     * Adjusts the barrel diameter if needed, reconstructs base and barrel, then integrates them
+     * into the physics world with correct alignment.
+     */
+    function updateCannonGeometry() {
+      // Ensure the barrel's diameter is sufficient for the projectile.
+      if (params.sphereDiameter > params.barrelDiameter) {
+        params.barrelDiameter = params.sphereDiameter;
+        const barrelController = findController(gui, 'barrelDiameter');
+        if (barrelController) barrelController.setValue(params.barrelDiameter);
+      }
+
+      // ----- Rebuild Cannon Base -----
+      const baseRadius = params.barrelDiameter;
+      const baseHeight = params.barrelDiameter;
+      if (cannonBaseMesh) {
+        cannonGroup.remove(cannonBaseMesh);
+        cannonBaseMesh.geometry.dispose();
+        cannonBaseMesh.material.dispose();
+      }
+      const baseGeometry = new THREE.CylinderGeometry(baseRadius, baseRadius, baseHeight, 32);
+      const baseMaterial = new THREE.MeshStandardMaterial({ color: 0x333333 });
+      cannonBaseMesh = new THREE.Mesh(baseGeometry, baseMaterial);
+      // Position the base so its bottom is at y=0.
+      cannonBaseMesh.position.set(0, baseHeight / 2, 0);
+      cannonGroup.add(cannonBaseMesh);
+      if (cannonBaseBody) world.removeBody(cannonBaseBody);
+      // Use a Cylinder shape for physics.
+      const baseShape = new Cylinder(baseRadius, baseRadius, baseHeight, 16);
+      cannonBaseBody = new Body({ mass: 0, shape: baseShape, material: groundMaterial });
+      world.addBody(cannonBaseBody);
+
+      // ----- Rebuild Cannon Barrel -----
+      const barrelLength = params.barrelLength;
+      const barrelRadius = params.barrelDiameter / 2;
+      if (barrelMesh) {
+        barrelGroup.remove(barrelMesh);
+        barrelMesh.geometry.dispose();
+        barrelMesh.material.dispose();
+      }
+      let visualBarrelGeometry = new THREE.CylinderGeometry(barrelRadius, barrelRadius, barrelLength, 32);
+      // Rotate to align the barrel along the X-axis.
+      visualBarrelGeometry.rotateZ(-Math.PI / 2);
+      barrelMesh = new THREE.Mesh(visualBarrelGeometry, new THREE.MeshStandardMaterial({
+        color: 0xe9e9e9,
+        metalness: 0.1,
+        roughness: 0.05
+      }));
+      // Position the barrel so its tip aligns with the barrel group.
+      barrelMesh.position.set(barrelLength / 2, 0, 0);
+      barrelGroup.add(barrelMesh);
+
+      // Build the physics body for the barrel.
+      if (cannonBarrelBody) world.removeBody(cannonBarrelBody);
+      const barrelShape = new Cylinder(barrelRadius, barrelRadius, barrelLength, 16);
+      cannonBarrelBody = new Body({ mass: 0, material: groundMaterial });
+      // Apply a local rotation to align the physics body with the visual barrel.
+      const shapeQuat = new CannonQuaternion().setFromAxisAngle(new Vec3(0, 0, 1), -Math.PI / 2);
+      cannonBarrelBody.addShape(barrelShape, new Vec3(), shapeQuat);
+      world.addBody(cannonBarrelBody);
+
+      // Position the barrel group relative to the base and update the camera target.
+      barrelGroup.position.set(0, baseHeight, 0);
+      cameraTarget.y = barrelGroup.position.y;
+      updateCannonOrientation();
+    }
+
+    // ===================== Ground Text Display Setup =====================
+    /**
+     * Creates a flat text label placed on the ground.
+     *
+     * Renders crisp text onto a high-resolution canvas, maps it onto a plane,
+     * and orients the plane flat on the ground.
+     *
+     * @param {string} text - The text to display.
+     * @param {THREE.Vector3} position - World position for the label.
+     * @param {number} rotationZ - Rotation (in radians) about the Z-axis.
+     * @param {number} [width=12] - Width of the label.
+     * @param {number} [height=3] - Height of the label.
+     * @param {string} [backgroundColor='white'] - Background color.
+     * @param {string} [textColor='black'] - Text color.
+     * @returns {THREE.Mesh} The label mesh.
+     */
+    function createGroundText(text, position, rotationZ, width = 12, height = 3, backgroundColor = 'white', textColor = 'black') {
+      const canvas = document.createElement('canvas');
+      const context = canvas.getContext('2d');
+      // Use high resolution for crisp text.
+      const resolutionFactor = 100;
+      canvas.width = width * resolutionFactor;
+      canvas.height = height * resolutionFactor;
+
+      context.fillStyle = backgroundColor;
+      context.fillRect(0, 0, canvas.width, canvas.height);
+
+      const fontSize = 1.5 * resolutionFactor;
+      context.font = `bold ${fontSize}px Arial`;
+      context.fillStyle = textColor;
+      context.textAlign = 'center';
+      context.textBaseline = 'middle';
+      context.fillText(text, canvas.width / 2, canvas.height / 2);
+
+      const texture = new THREE.CanvasTexture(canvas);
+      texture.needsUpdate = true;
+
+      const planeGeo = new THREE.PlaneGeometry(width, height);
+      const planeMat = new THREE.MeshBasicMaterial({ map: texture, transparent: true, depthWrite: false });
+      const mesh = new THREE.Mesh(planeGeo, planeMat);
+
+      mesh.position.copy(position);
+      // Lay text flat on the ground.
+      mesh.rotation.x = -Math.PI / 2;
+      mesh.rotation.z = rotationZ;
+      scene.add(mesh);
+      return mesh;
+    }
+
+    /**
+     * Creates static ground labels that display wall distances.
+     * Positions each label so that it shows the distance to the opposite wall.
+     */
+    function createDistanceLabels() {
+      const labelY = 0.05;  // Slightly above ground to avoid z-fighting.
+      const labelOffset = 8;
+      const labelWidth = 3;
+      const labelHeight = 1.8;
+
+      createGroundText(params.wallDistancePosZ.toString(), new THREE.Vector3(0, labelY, -labelOffset), Math.PI, labelWidth, labelHeight);
+      createGroundText(params.wallDistanceNegX.toString(), new THREE.Vector3(labelOffset, labelY, 0), Math.PI / 2, labelWidth, labelHeight);
+      createGroundText(params.wallDistanceNegZ.toString(), new THREE.Vector3(0, labelY, labelOffset), 0, labelWidth, labelHeight);
+      createGroundText(params.wallDistancePosX.toString(), new THREE.Vector3(-labelOffset, labelY, 0), -Math.PI / 2, labelWidth, labelHeight);
+    }
+
+    // ===================== Initial Setup Calls =====================
+    // Build the cannon, initialize the wall, and create ground labels.
+    updateCannonGeometry();
+    checkAndUpdateWall();
+    createDistanceLabels();
+
+    // ===================== Particle (Projectile) Setup =====================
+    const particles = [];               // Active projectile collection.
+    const projectileRemovalDelay = 3.0;   // Delay (seconds) after ground contact before removal.
+    const clock = new THREE.Clock();
+    let lastFiredParticle = null;         // Track the most recent projectile.
+
+    /**
+     * Creates a projectile from the cannon tip and fires it with an initial velocity.
+     * Determines initial speed from an energy model and sets the projectile's forward direction.
+     */
+    function fireParticle() {
+      const projectileRadius = params.sphereDiameter / 2;
+      const sphereGeo = new THREE.SphereGeometry(projectileRadius, 16, 16);
+      const sphereMat = new THREE.MeshStandardMaterial({ color: 0xff8000, metalness: 0.05, roughness: 0.05 });
+      const sphereMesh = new THREE.Mesh(sphereGeo, sphereMat);
+
+      // Calculate tip position in world coordinates from barrel.
+      const tipLocal = new THREE.Vector3(params.barrelLength, 0, 0);
+      const tipWorld = tipLocal.applyMatrix4(barrelGroup.matrixWorld);
+      sphereMesh.position.copy(tipWorld);
+      scene.add(sphereMesh);
+
+      const sphereShape = new Sphere(projectileRadius);
+      const sphereBody = new Body({
+        mass: 2 * ((4/3) * Math.PI * Math.pow(projectileRadius, 3)),
+        shape: sphereShape,
+        position: new Vec3(tipWorld.x, tipWorld.y, tipWorld.z),
+        material: particleMaterial,
+        linearDamping: 0.1,
+        angularDamping: 0.96,
+      });
+
+      // Associate the mesh with its physics body.
+      const particleData = { mesh: sphereMesh, body: sphereBody, groundContactTime: undefined };
+      sphereBody.userData = particleData;
+
+      // Add collision listener to record ground contact time.
+      sphereBody.addEventListener('collide', (event) => {
+        const contact = event.contact;
+        const bodyA = contact.bi;
+        const bodyB = contact.bj;
+        if (particleData.groundContactTime !== undefined) return;
+        if ((bodyA === sphereBody && bodyB === groundBody) || (bodyB === sphereBody && bodyA === groundBody)) {
+          particleData.groundContactTime = clock.getElapsedTime();
+        }
+      });
+
+      // Compute initial speed using energy considerations.
+      const E0 = 240;  // Reference energy constant.
+      const refBarrelLength = 4;
+      const efficiency = params.sphereDiameter / params.barrelDiameter;
+      const effectiveEnergy = E0 * (params.barrelLength / refBarrelLength) * efficiency;
+      const projectileSpeed = Math.sqrt((2 * effectiveEnergy) / sphereBody.mass);
+
+      // Determine the forward direction from barrel orientation.
+      const barrelQuat = new THREE.Quaternion();
+      barrelGroup.getWorldQuaternion(barrelQuat);
+      const forward = new THREE.Vector3(1, 0, 0).applyQuaternion(barrelQuat).normalize();
+      sphereBody.velocity.set(forward.x * projectileSpeed, forward.y * projectileSpeed, forward.z * projectileSpeed);
+
+      world.addBody(sphereBody);
+      particles.push(particleData);
+      lastFiredParticle = particleData;
+    }
+
+    // ===================== User Interaction (Yaw & Pitch) =====================
+    // Define step increments for yaw and pitch adjustments.
+    const yawStep = 0.01;
+    const pitchStep = 0.01;
+    const angleDisplayElement = document.getElementById('angleDisplay');
+    const distanceDisplayElement = document.getElementById('distanceDisplay');
+
+    // Listen for keyboard events to control cannon orientation and firing.
+    window.addEventListener('keydown', (event) => {
+      let orientationChanged = false;
+      switch (event.code) {
+        case 'ArrowLeft':
+          cannonYaw -= yawStep;
+          orientationChanged = true;
+          break;
+        case 'ArrowRight':
+          cannonYaw += yawStep;
+          orientationChanged = true;
+          break;
+        case 'ArrowUp':
+          cannonPitch = Math.min(cannonPitch + pitchStep, Math.PI / 2 - 0.1);
+          orientationChanged = true;
+          break;
+        case 'ArrowDown':
+          cannonPitch = Math.max(cannonPitch - pitchStep, 0.1);
+          orientationChanged = true;
+          break;
+        case 'Space':
+          fireParticle();
+          break;
+      }
+      if (orientationChanged) {
+        updateCannonOrientation();
+        if (angleDisplayElement) {
+          const angleDegrees = (cannonPitch * 180 / Math.PI).toFixed(1);
+          angleDisplayElement.textContent = `Angle: ${angleDegrees}°`;
+        }
+      }
+    });
+
+    // Initialize angle display on load.
+    if (angleDisplayElement) {
+      const angleDegrees = (cannonPitch * 180 / Math.PI).toFixed(1);
+      angleDisplayElement.textContent = `Angle: ${angleDegrees}°`;
+    }
+
+    // ===================== Animation Loop =====================
+    /**
+     * Main animation loop.
+     *
+     * Advances the physics simulation, synchronizes projectile meshes with their bodies,
+     * removes projectiles as needed, updates camera orbit based on cannon orientation,
+     * updates HUD displays for angle and projectile distance, and renders the scene.
+     */
+    function animate() {
+      requestAnimationFrame(animate);
+      const delta = clock.getDelta();
+      const elapsedTime = clock.getElapsedTime();
+      world.step(1 / 120, delta, 10);
+
+      // Orbit the camera around the cannon.
+      const cameraAngle = -cannonYaw - (Math.PI / 2);
+      camera.position.x = cameraOrbitRadius * Math.sin(cameraAngle);
+      camera.position.z = cameraOrbitRadius * Math.cos(cameraAngle);
+      camera.position.y = cameraHeight;
+      camera.lookAt(cameraTarget);
+
+      // Update projectiles: synchronize each mesh with its physics body and remove if out-of-bounds or after delay.
+      let lastParticleStillActive = false;
+      for (let i = particles.length - 1; i >= 0; i--) {
+        const p = particles[i];
+        p.mesh.position.copy(p.body.position);
+        p.mesh.quaternion.copy(p.body.quaternion);
+        if (p === lastFiredParticle) lastParticleStillActive = true;
+        let shouldRemove = false;
+        // Check if the projectile is out-of-bounds.
+        if (p.mesh.position.y < -10 || Math.abs(p.mesh.position.x) > 250 || Math.abs(p.mesh.position.z) > 250) {
+          shouldRemove = true;
+        // Check if sufficient time has passed since ground contact.
+        } else if (p.groundContactTime !== undefined && elapsedTime - p.groundContactTime > projectileRemovalDelay) {
+          shouldRemove = true;
+        }
+        if (shouldRemove) {
+          scene.remove(p.mesh);
+          world.removeBody(p.body);
+          p.mesh.geometry.dispose();
+          p.mesh.material.dispose();
+          if (p === lastFiredParticle) {
+            lastFiredParticle = null;
+            lastParticleStillActive = false;
+          }
+          particles.splice(i, 1);
+        }
+      }
+
+      // Update distance display for the last fired projectile.
+      if (distanceDisplayElement) {
+        if (lastParticleStillActive && lastFiredParticle) {
+          const distance = lastFiredParticle.body.position.length();
+          distanceDisplayElement.textContent = `Distance: ${distance.toFixed(2)}`;
+        } else {
+          distanceDisplayElement.textContent = `Distance: ---`;
+        }
+      }
+
+      // Update wall cubes' positions to match their physics bodies.
+      if (activeWall) {
+        activeWall.cubes.forEach(cube => {
+          cube.mesh.position.copy(cube.body.position);
+          cube.mesh.quaternion.copy(cube.body.quaternion);
+        });
+      }
+
+      renderer.render(scene, camera);
+    }
+    animate();
+
+    // ===================== Window Resize Handling =====================
+    /**
+     * Adjusts the camera's aspect ratio and renderer size when the window is resized.
+     */
+    function onWindowResize() {
+      renderer.setSize(window.innerWidth, window.innerHeight);
+      const newAspect = (window.innerWidth / window.innerHeight);
+      camera.aspect = newAspect;
+      camera.updateProjectionMatrix();
+    }
+    window.addEventListener('resize', onWindowResize, false);
+  </script>
+</body>
+</html>
