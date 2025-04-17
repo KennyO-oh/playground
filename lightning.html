@@ -351,7 +351,7 @@
         const t=i/segs; // Interpolation factor (0 to 1)
         const y=50+10*t; // Y position from 50 up to 60
         // Radius changes from 13 to 24 with negative (concave) curvature
-        pts.push(new THREE.Vector2(-13+(24-(-13))*(-t*t), y));
+        pts.push(new THREE.Vector2(-13+(24-13)*(-t*t), y));
       }
       // Create the upper frustum using LatheGeometry
       scene.add(new THREE.Mesh(new THREE.LatheGeometry(pts,64), cloudMat));
