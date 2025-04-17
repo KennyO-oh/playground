@@ -1,0 +1,429 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Audio Reactive Lightning Simulation – Ridiculous Physics</title>
+  
+  <style>
+    body { margin: 0; overflow: hidden; background: #000; }
+    canvas { display: block; }
+    #info {
+      position: absolute;
+      top: 10px;
+      width: 100%;
+      text-align: center;
+      color: white;
+      font-family: Arial, sans-serif;
+      z-index: 2;
+    }
+    #controls {
+      position: absolute;
+      top: 40px;
+      left: 50%;
+      transform: translateX(-50%);
+      z-index: 2;
+      display: flex;
+      gap: 10px;
+    }
+    button, input[type="file"] {
+      font-size: 14px;
+      padding: 5px 10px;
+    }
+  </style>
+  
+  <script async src="https://unpkg.com/es-module-shims@1.8.0/dist/es-module-shims.js"></script>
+  
+  <script type="importmap">
+    {
+      "imports": {
+        "three": "https://unpkg.com/three@0.160.0/build/three.module.js"
+      }
+    }
+  </script>
+</head>
+<body>
+  <div id="info">Audio Reactive Lightning Simulation – Ridiculous Physics</div>
+  <div id="controls">
+    <input id="upload" type="file" accept="audio/*">
+    <button id="playPauseButton">Play</button>
+  </div>
+  
+  <script type="module">
+    import * as THREE from 'three';
+    
+    // -------------------------
+    // SCENE SETUP
+    // -------------------------
+    const scene = new THREE.Scene();
+    scene.background = new THREE.Color(0x000000);
+    
+    // Camera at (0,15,-45) looking at (0,15,0)
+    const camera = new THREE.PerspectiveCamera(60, window.innerWidth/window.innerHeight, 0.1, 1000);
+    camera.position.set(0, 15, -45);
+    camera.lookAt(new THREE.Vector3(0, 15, 0));
+    
+    const renderer = new THREE.WebGLRenderer({ antialias: true });
+    renderer.setSize(window.innerWidth, window.innerHeight);
+    document.body.appendChild(renderer.domElement);
+    
+    // -------------------------
+    // ADD A "CLOUD"
+    // -------------------------
+    const cloudGeometry = new THREE.BoxGeometry(30, 5, 30);
+    const cloudMaterial = new THREE.MeshBasicMaterial({ color: 0x222222 });
+    const cloudMesh = new THREE.Mesh(cloudGeometry, cloudMaterial);
+    cloudMesh.position.set(0, 27.5, 0);
+    scene.add(cloudMesh);
+    
+    // -------------------------
+    // GLOBAL ATTRACTORS – FOCUS ON THE GROUND!
+    // -------------------------
+    // Create attractors mostly concentrated near the ground: y in [0,10].
+    const globalAttractors = [];
+    const baseAttractorCount = 100;
+    function initGlobalAttractors() {
+      for (let i = 0; i < baseAttractorCount; i++) {
+        const pos = new THREE.Vector3(
+          THREE.MathUtils.randFloatSpread(30), 
+          THREE.MathUtils.randFloat(0, 15),      // y from 0 to 10
+          THREE.MathUtils.randFloatSpread(30)
+        );
+        const charge = THREE.MathUtils.randFloat(0.5, 1.0);
+        globalAttractors.push({ position: pos, charge: charge });
+      }
+    }
+    initGlobalAttractors();
+    
+    // Update attractors dynamically based on audio.
+    function updateGlobalAttractors(audioMetrics) {
+      for (let attractor of globalAttractors) {
+        // During high volume, pull attractors toward the very low ground.
+        attractor.position.y = THREE.MathUtils.lerp(attractor.position.y, 5, 0.1);
+        // Charge fluctuates more with spectral flux.
+        attractor.charge = THREE.MathUtils.lerp(attractor.charge, THREE.MathUtils.randFloat(0.5, 5.0) * (1 + audioMetrics.spectralFlux), 0.05);
+        // Minor drift horizontally.
+        attractor.position.x += THREE.MathUtils.randFloatSpread(0.2 * audioMetrics.volume);
+        attractor.position.z += THREE.MathUtils.randFloatSpread(0.2 * audioMetrics.volume);
+      }
+    }
+    
+    function computeElectricFieldForce(position, audioMetrics) {
+      let fieldForce = new THREE.Vector3(0, 0, 0);
+      // Lower k to avoid overwhelming forces, but audio will modulate it.
+      const k = 80;
+      for (const attractor of globalAttractors) {
+        let dir = new THREE.Vector3().subVectors(attractor.position, position);
+        let distanceSq = dir.lengthSq();
+        if (distanceSq < 1) distanceSq = 1;
+        dir.normalize();
+        let forceMagnitude = k * attractor.charge / distanceSq;
+        fieldForce.add(dir.multiplyScalar(forceMagnitude));
+      }
+      // Modulate field strength further with audio.
+      let modulation = THREE.MathUtils.lerp(0.5, 2.0, audioMetrics.volume);
+      return fieldForce.multiplyScalar(modulation);
+    }
+    
+    // -------------------------
+    // AUDIO SETUP
+    // -------------------------
+    let audioContext, audioSource, analyser;
+    let dataArray, timeDomainArray;
+    const fftSize = 512;
+    const bufferLength = fftSize / 2;
+    let lastFFT = new Uint8Array(bufferLength);
+    let audioIsPlaying = false;
+    
+    const audioElem = new Audio();
+    audioElem.crossOrigin = "anonymous";
+    audioElem.loop = true;
+    
+    function initAudio() {
+      audioContext = new (window.AudioContext || window.webkitAudioContext)();
+      audioSource = audioContext.createMediaElementSource(audioElem);
+      analyser = audioContext.createAnalyser();
+      analyser.fftSize = fftSize;
+      dataArray = new Uint8Array(analyser.frequencyBinCount);
+      timeDomainArray = new Uint8Array(analyser.frequencyBinCount);
+      
+      audioSource.connect(analyser);
+      analyser.connect(audioContext.destination);
+    }
+    
+    const uploadElem = document.getElementById('upload');
+    uploadElem.addEventListener('change', (event) => {
+      const file = event.target.files[0];
+      if (file) {
+        const fileURL = URL.createObjectURL(file);
+        audioElem.src = fileURL;
+        initAudio();
+        audioElem.play();
+      }
+    });
+    
+    // -------------------------
+    // PLAY/PAUSE BUTTON
+    // -------------------------
+    const playPauseButton = document.getElementById('playPauseButton');
+    playPauseButton.addEventListener('click', () => {
+      if (!audioElem.src) return;
+      if (audioIsPlaying) {
+        audioElem.pause();
+      } else {
+        audioElem.play();
+      }
+    });
+    audioElem.addEventListener('play', () => {
+      audioIsPlaying = true;
+      playPauseButton.textContent = "Pause";
+      console.log("Audio playing.");
+    });
+    audioElem.addEventListener('pause', () => {
+      audioIsPlaying = false;
+      playPauseButton.textContent = "Play";
+      console.log("Audio paused.");
+    });
+    
+    // -------------------------
+    // AUDIO PROCESSING HELPERS
+    // -------------------------
+    function computeVolume(timeDomainArray) {
+      let sum = 0;
+      for (let i = 0; i < timeDomainArray.length; i++) {
+        let val = (timeDomainArray[i] - 128) / 128.0;
+        sum += val * val;
+      }
+      return Math.sqrt(sum / timeDomainArray.length);
+    }
+    
+    function computeFrequencyAverage(freqArray) {
+      let sum = 0;
+      for (let i = 0; i < freqArray.length; i++) {
+        sum += freqArray[i];
+      }
+      return sum / (freqArray.length * 255);
+    }
+    
+    function computeSpectralFlux(newFFT, oldFFT) {
+      let flux = 0;
+      for (let i = 0; i < newFFT.length; i++) {
+        let diff = newFFT[i] - oldFFT[i];
+        if (diff > 0) flux += diff;
+      }
+      return flux / (newFFT.length * 255);
+    }
+    
+    // -------------------------
+    // LIGHTNINGBOLT CLASS
+    // -------------------------
+    // A bolt grows by extending its "leaderPoints" path. It’s steered by a combination of:
+    // - A large default downward force.
+    // - A physics-based electric field force from dynamic attractors.
+    // - Random jitter (kept small now).
+    // It also can branch, with each child bolt being half as thick.
+    class LightningBolt {
+      constructor(startPos, thickness = 0.1, level = 0) {
+        this.startPos = startPos.clone();
+        this.leaderPoints = [startPos.clone()];
+        this.startTime = performance.now();
+        this.lifetime = 1000;
+        this.fadeDuration = 1000;
+        this.mesh = null;
+        this.thickness = thickness;
+        this.level = level;
+        // Lower branches have higher chance; using non-linear increase.
+        this.branchChance = 0.2 * Math.pow(this.level + 1, 2);
+        this.updateGeometry();
+      }
+      
+      update(audioMetrics) {
+        let currentTip = this.leaderPoints[this.leaderPoints.length - 1].clone();
+        
+        // Compute forces:
+        let defaultDown = new THREE.Vector3(0, -1, 0);
+        // Increase downward force substantially.
+        defaultDown.multiplyScalar(5);
+        
+        let fieldForce = computeElectricFieldForce(currentTip, audioMetrics);
+        
+        // Very small jitter now.
+        let jitterMag = audioMetrics.spectralFlux * 0.2;
+        let jitter = new THREE.Vector3(
+          THREE.MathUtils.randFloatSpread(jitterMag),
+          THREE.MathUtils.randFloatSpread(jitterMag),
+          THREE.MathUtils.randFloatSpread(jitterMag)
+        );
+        
+        // Combine forces.
+        let combinedForce = new THREE.Vector3();
+        combinedForce.add(defaultDown);
+        combinedForce.add(fieldForce);
+        combinedForce.add(jitter);
+        combinedForce.normalize();
+        
+        // Increase extension speed significantly.
+        let speed = THREE.MathUtils.lerp(3, 6, audioMetrics.volume);
+        let extension = combinedForce.multiplyScalar(speed);
+        
+        let newTip = currentTip.clone().add(extension);
+        if (newTip.y < 0) newTip.y = 0;
+        this.leaderPoints.push(newTip);
+        this.updateGeometry();
+        
+        // Attempt branching if below max branch depth.
+        const maxBranchLevel = 2;
+        if (this.level < maxBranchLevel && Math.random() < this.branchChance) {
+          let branchThickness = this.thickness * 0.5;
+          let branch = new LightningBolt(currentTip, branchThickness, this.level + 1);
+          lightningSim.addBolt(branch);
+        }
+      }
+      
+      updateGeometry() {
+        if (this.leaderPoints.length < 2) {
+          if (this.mesh) {
+            scene.remove(this.mesh);
+            this.mesh = null;
+          }
+          return;
+        }
+        let curve = new THREE.CatmullRomCurve3(this.leaderPoints);
+        const tubularSegments = Math.max(2, this.leaderPoints.length * 3);
+        const radialSegments = 8;
+        if (this.mesh) scene.remove(this.mesh);
+        const geometry = new THREE.TubeGeometry(curve, tubularSegments, this.thickness, radialSegments, false);
+        const material = new THREE.MeshBasicMaterial({ color: 0xffffff, transparent: true, opacity: 1 });
+        this.mesh = new THREE.Mesh(geometry, material);
+        scene.add(this.mesh);
+      }
+      
+      updateFade() {
+        let age = performance.now() - this.startTime;
+        if (age > this.lifetime) {
+          let fadeProgress = (age - this.lifetime) / this.fadeDuration;
+          let newOpacity = THREE.MathUtils.clamp(1 - fadeProgress, 0, 1);
+          if (this.mesh && this.mesh.material) {
+            this.mesh.material.opacity = newOpacity;
+          }
+        }
+      }
+      
+      isExpired() {
+        let age = performance.now() - this.startTime;
+        return age > this.lifetime + this.fadeDuration;
+      }
+    }
+    
+    // -------------------------
+    // LIGHTNING SIMULATOR CLASS
+    // -------------------------
+    // Manages spawning and updating bolts. On detecting a strong beat,
+    // it spawns a burst of bolts simultaneously.
+    class LightningSimulator {
+      constructor() {
+        this.bolts = [];
+        this.lastBeatTime = 0;
+        this.beatCooldown = 200; // Reduced cooldown for rapid spawns.
+        this.movingAvgVolume = 0;
+      }
+      
+      addBolt(bolt) {
+        this.bolts.push(bolt);
+      }
+      
+      update(audioMetrics) {
+        updateGlobalAttractors(audioMetrics);
+        
+        this.movingAvgVolume = THREE.MathUtils.lerp(this.movingAvgVolume, audioMetrics.volume, 0.1);
+        const beatThreshold = this.movingAvgVolume + 0.005;
+        const now = performance.now();
+        if (audioMetrics.volume > beatThreshold && now - this.lastBeatTime > this.beatCooldown) {
+          this.lastBeatTime = now;
+          let beatStrength = (audioMetrics.volume - this.movingAvgVolume) / (1 - this.movingAvgVolume);
+          // Spawn a burst—up to 10 bolts at once.
+          let strikesToSpawn = Math.max(1, Math.round(beatStrength * 10));
+          for (let i = 0; i < strikesToSpawn; i++) {
+            let spawnX = THREE.MathUtils.randFloatSpread(30);
+            let spawnZ = THREE.MathUtils.randFloatSpread(30);
+            let spawnPos = new THREE.Vector3(spawnX, 25, spawnZ);
+            let baseThickness = THREE.MathUtils.lerp(0.1, 0.3, beatStrength);
+            let bolt = new LightningBolt(spawnPos, baseThickness, 0);
+            this.addBolt(bolt);
+          }
+          console.log("Spawned primary bolts. Total bolts:", this.bolts.length);
+        }
+        
+        for (let bolt of this.bolts) {
+          bolt.update(audioMetrics);
+          bolt.updateFade();
+        }
+        this.bolts = this.bolts.filter(bolt => {
+          if (bolt.isExpired()) {
+            if (bolt.mesh) scene.remove(bolt.mesh);
+            return false;
+          }
+          return true;
+        });
+      }
+    }
+    
+    const lightningSim = new LightningSimulator();
+    
+    // -------------------------
+    // DEBUG LOGGING FOR AUDIO METRICS (THROTTLED)
+    // -------------------------
+    let lastLogTime = 0;
+    function debugLog(metrics) {
+      const now = performance.now();
+      if (now - lastLogTime > 250) {
+        console.group("Audio Metrics");
+        console.log("Volume:", metrics.volume.toFixed(3));
+        console.log("Frequency Avg:", metrics.frequencyAvg.toFixed(3));
+        console.log("Spectral Flux:", metrics.spectralFlux.toFixed(3));
+        console.groupEnd();
+        lastLogTime = now;
+      }
+    }
+    
+    // -------------------------
+    // ANIMATION LOOP
+    // -------------------------
+    function animate() {
+      requestAnimationFrame(animate);
+      
+      let audioMetrics = { volume: 0, frequencyAvg: 0, spectralFlux: 0 };
+      if (analyser && audioIsPlaying) {
+        analyser.getByteFrequencyData(dataArray);
+        analyser.getByteTimeDomainData(timeDomainArray);
+        
+        const volume = computeVolume(timeDomainArray);
+        const frequencyAvg = computeFrequencyAverage(dataArray);
+        const flux = computeSpectralFlux(dataArray, lastFFT);
+        
+        audioMetrics.volume = volume;
+        audioMetrics.frequencyAvg = frequencyAvg;
+        audioMetrics.spectralFlux = flux;
+        lastFFT.set(dataArray);
+        
+        debugLog(audioMetrics);
+        lightningSim.update(audioMetrics);
+      }
+      
+      renderer.render(scene, camera);
+    }
+    
+    animate();
+    
+    // -------------------------
+    // HANDLE WINDOW RESIZE
+    // -------------------------
+    window.addEventListener('resize', () => {
+      camera.aspect = window.innerWidth / window.innerHeight;
+      camera.updateProjectionMatrix();
+      renderer.setSize(window.innerWidth, window.innerHeight);
+    });
+    
+  </script>
+</body>
+</html>

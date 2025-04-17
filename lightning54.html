@@ -1,0 +1,316 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>3D Physics-Based Lightning Simulation</title>
+
+  <!-- Basic CSS example styling -->
+  <style>
+    body { margin: 0; overflow: hidden; background: #000; }
+    canvas { display: block; }
+    #info {
+      position: absolute;
+      top: 10px;
+      width: 100%;
+      text-align: center;
+      color: #ddd;
+      font-family: Arial, sans-serif;
+      z-index: 5;
+    }
+    #audio-upload, #playPauseBtn {
+      position: absolute;
+      left: 10px;
+      z-index: 10;
+    }
+    #audio-upload { top: 40px; }
+    #playPauseBtn { top: 70px; }
+  </style>
+
+  <!-- Import map shim for browsers without native support -->
+  <script async src="https://unpkg.com/es-module-shims@1.8.0/dist/es-module-shims.js"></script>
+
+  <!-- Define all external dependencies in the import map -->
+  <script type="importmap">
+    {
+      "imports": {
+        "three": "https://unpkg.com/three@0.160.0/build/three.module.js"
+      }
+    }
+  </script>
+</head>
+<body>
+  <div id="info">Physics-Based Audio-Reactive Lightning Simulation</div>
+  <input type="file" id="audio-upload" accept=".mp3, .flac, .wav" />
+  <button id="playPauseBtn">Play</button>
+
+  <script type="module">
+    import * as THREE from 'three';
+
+    // ----- Scene, Camera, Renderer Setup -----
+    const scene = new THREE.Scene();
+
+    // Camera at (0,15,-45) looking at (0,15,0)
+    const camera = new THREE.PerspectiveCamera(75, window.innerWidth / window.innerHeight, 0.1, 1000);
+    camera.position.set(0, 15, -45);
+    camera.lookAt(new THREE.Vector3(0, 15, 0));
+
+    const renderer = new THREE.WebGLRenderer({ antialias: true });
+    renderer.setSize(window.innerWidth, window.innerHeight);
+    document.body.appendChild(renderer.domElement);
+
+    // Handle resize
+    window.addEventListener('resize', () => {
+      camera.aspect = window.innerWidth / window.innerHeight;
+      camera.updateProjectionMatrix();
+      renderer.setSize(window.innerWidth, window.innerHeight);
+    });
+
+    // ----- Create the "Cloud" -----
+    // A dark truncated cube centered at (0,30,0) taking up (-15 to 15, 25 to 30, -15 to 15)
+    const cloudGeometry = new THREE.BoxGeometry(30, 5, 30);
+    const cloudMaterial = new THREE.MeshBasicMaterial({ color: 0x222222 });
+    const cloudMesh = new THREE.Mesh(cloudGeometry, cloudMaterial);
+    cloudMesh.position.set(0, 30, 0);
+    scene.add(cloudMesh);
+
+    // ----- Charge Field Setup -----
+    // The field will be within a frustum that spans vertically from the cloud base (y=30) down to the ground (y=0)
+    // The top disk has a diameter of 28 (radius = 14) and the bottom disk is 50% larger (diameter 42, radius = 21)
+    // Divided into 4 layers with increasing density and greater attraction force from top to bottom.
+    const numLayers = 4;
+    const fieldTopY = 30;
+    const fieldBottomY = 0;
+    const layerHeight = (fieldTopY - fieldBottomY) / numLayers;
+    // Settings for each layer: count and force.
+    const layerSettings = [
+      { count: 50, force: 0.5 },
+      { count: 100, force: 1.0 },
+      { count: 200, force: 2.0 },
+      { count: 300, force: 4.0 }
+    ];
+    const charges = [];  // Array to hold all charge objects
+
+    // Group to hold visual charge meshes (rendered as tiny circles)
+    const chargesGroup = new THREE.Group();
+    scene.add(chargesGroup);
+
+    // For each layer, generate charge objects randomly within the interpolated disk
+    for (let i = 0; i < numLayers; i++) {
+      const layerTop = fieldTopY - i * layerHeight;
+      const layerBottom = fieldTopY - (i + 1) * layerHeight;
+
+      for (let j = 0; j < layerSettings[i].count; j++) {
+        const y = THREE.MathUtils.lerp(layerTop, layerBottom, Math.random());
+        const t = (fieldTopY - y) / (fieldTopY - fieldBottomY); // 0 at top, 1 at bottom
+        const radius = 14 + t * (21 - 14);
+
+        const angle = Math.random() * Math.PI * 2;
+        const r = Math.sqrt(Math.random()) * radius;
+        const x = r * Math.cos(angle);
+        const z = r * Math.sin(angle);
+        const position = new THREE.Vector3(x, y, z);
+        const originalPosition = position.clone();
+
+        // Visualize the charge as a small circle.
+        const chargeGeometry = new THREE.CircleGeometry(0.1, 16);
+        const chargeMaterial = new THREE.MeshBasicMaterial({ color: 0xffffff, transparent: true, opacity: 0.3, side: THREE.DoubleSide });
+        const chargeMesh = new THREE.Mesh(chargeGeometry, chargeMaterial);
+        chargeMesh.position.copy(position);
+        chargesGroup.add(chargeMesh);
+
+        charges.push({
+          mesh: chargeMesh,
+          position,
+          originalPosition,
+          force: layerSettings[i].force,
+          used: false
+        });
+      }
+    }
+
+    // ----- Audio Setup -----
+    let audioContext, analyser, audioSource, audioElement;
+    let audioDataArray;
+    let isAudioPlaying = false;
+
+    // For spectral flux onset detection:
+    let previousSpectrum = null;
+    const fluxThreshold = 100;  // Adjust this threshold based on your audio
+
+    const fileInput = document.getElementById('audio-upload');
+    fileInput.addEventListener('change', event => {
+      const file = event.target.files[0];
+      if (!file) return;
+      if (audioElement) {
+        audioElement.pause();
+        audioElement.src = "";
+      }
+      audioElement = new Audio();
+      audioElement.src = URL.createObjectURL(file);
+      audioElement.crossOrigin = "anonymous";
+      audioElement.loop = false;
+      if (!audioContext) {
+        audioContext = new (window.AudioContext || window.webkitAudioContext)();
+      }
+      if (audioSource) audioSource.disconnect();
+      audioSource = audioContext.createMediaElementSource(audioElement);
+      analyser = audioContext.createAnalyser();
+      analyser.fftSize = 256;
+      const bufferLength = analyser.frequencyBinCount;
+      audioDataArray = new Uint8Array(bufferLength);
+      audioSource.connect(analyser);
+      analyser.connect(audioContext.destination);
+    });
+
+    // Play/Pause button
+    const playPauseBtn = document.getElementById('playPauseBtn');
+    playPauseBtn.addEventListener('click', () => {
+      if (!audioElement) return;
+      if (isAudioPlaying) {
+        audioElement.pause();
+        isAudioPlaying = false;
+        playPauseBtn.textContent = "Play";
+      } else {
+        if (audioContext.state === 'suspended') {
+          audioContext.resume();
+        }
+        audioElement.play();
+        isAudioPlaying = true;
+        playPauseBtn.textContent = "Pause";
+      }
+    });
+
+    // ----- Lightning Bolt Parameters and Storage -----
+    const bolts = []; // Active lightning bolts in the scene
+    const boltLifetime = 250; // milliseconds each bolt remains visible
+    const segmentLength = 0.5;   // Length of each branch segment
+    const influenceRadius = 5; // How far a branch tip "sees" attractors
+    const killDistance = 1;     // Distance to consider a charge reached
+
+    // ----- Space Colonization / Bolt Creation -----
+    function createLightningBolt() {
+      // Start at a random location on the base of the cloud (y=25).
+      const rootX = THREE.MathUtils.randFloat(-15, 15);
+      const rootZ = THREE.MathUtils.randFloat(-15, 15);
+      const root = new THREE.Vector3(rootX, 25, rootZ);
+
+      const branchNodes = [root];
+      let currentPos = root.clone();
+      let reachedGround = false;
+      const maxIterations = 100;
+      let iterations = 0;
+
+      while (!reachedGround && iterations < maxIterations) {
+        iterations++;
+        // Gather attractors within influence radius.
+        const attractors = [];
+        charges.forEach(charge => {
+          if (!charge.used) {
+            const distance = currentPos.distanceTo(charge.position);
+            if (distance < influenceRadius) {
+              attractors.push({ charge, distance });
+            }
+          }
+        });
+        if (attractors.length === 0) break;
+
+        const cumulativeDir = new THREE.Vector3();
+        attractors.forEach(item => {
+          const dir = new THREE.Vector3().subVectors(item.charge.position, currentPos).normalize();
+          dir.multiplyScalar(item.charge.force);
+          cumulativeDir.add(dir);
+        });
+        if (cumulativeDir.length() === 0) break;
+        cumulativeDir.normalize();
+
+        const nextPos = currentPos.clone().addScaledVector(cumulativeDir, segmentLength);
+        branchNodes.push(nextPos);
+        currentPos = nextPos;
+
+        attractors.forEach(item => {
+          if (currentPos.distanceTo(item.charge.position) < killDistance) {
+            item.charge.used = true;
+          }
+        });
+
+        if (currentPos.y <= 0) {
+          reachedGround = true;
+          currentPos.y = 0;
+          branchNodes[branchNodes.length - 1] = currentPos;
+          break;
+        }
+      }
+
+      const boltMaterial = new THREE.LineBasicMaterial({ color: 0xffffff, transparent: true, opacity: 1 });
+      const boltGeometry = new THREE.BufferGeometry().setFromPoints(branchNodes);
+      const boltLine = new THREE.Line(boltGeometry, boltMaterial);
+      scene.add(boltLine);
+
+      bolts.push({ line: boltLine, startTime: performance.now() });
+    }
+
+    // ----- Animation Loop -----
+    function animate() {
+      requestAnimationFrame(animate);
+
+      // Audio Analysis using FFT spectral flux.
+      if (isAudioPlaying && analyser) {
+        // Get current frequency spectrum.
+        const frequencyData = new Uint8Array(analyser.frequencyBinCount);
+        analyser.getByteFrequencyData(frequencyData);
+
+        if (previousSpectrum === null) {
+          // Initialize the previous spectrum if needed.
+          previousSpectrum = frequencyData.slice(0);
+        } else {
+          // Compute spectral flux: sum of positive differences between current and previous spectrum.
+          let flux = 0;
+          for (let i = 0; i < frequencyData.length; i++) {
+            const diff = frequencyData[i] - previousSpectrum[i];
+            if (diff > 0) flux += diff;
+          }
+          // Update previous spectrum.
+          previousSpectrum = frequencyData.slice(0);
+
+          // If the flux exceeds our threshold, trigger a lightning bolt.
+          if (flux > fluxThreshold) {
+            createLightningBolt();
+          }
+        }
+      }
+
+      // Fade out and remove expired lightning bolts.
+      const currentTime = performance.now();
+      for (let i = bolts.length - 1; i >= 0; i--) {
+        const bolt = bolts[i];
+        const elapsed = currentTime - bolt.startTime;
+        if (elapsed > boltLifetime) {
+          scene.remove(bolt.line);
+          bolts.splice(i, 1);
+          // Reset used charges with a tiny random offset.
+          charges.forEach(charge => {
+            if (charge.used) {
+              charge.used = false;
+              const offset = new THREE.Vector3(
+                THREE.MathUtils.randFloatSpread(0.5),
+                THREE.MathUtils.randFloatSpread(0.5),
+                THREE.MathUtils.randFloatSpread(0.5)
+              );
+              charge.position.copy(charge.originalPosition).add(offset);
+              charge.mesh.position.copy(charge.position);
+            }
+          });
+        } else {
+          const opacity = THREE.MathUtils.clamp(1 - elapsed / boltLifetime, 0, 1);
+          bolt.line.material.opacity = opacity;
+        }
+      }
+
+      renderer.render(scene, camera);
+    }
+    animate();
+
+  </script>
+</body>
+</html>
