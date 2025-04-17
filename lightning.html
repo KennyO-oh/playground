@@ -1,0 +1,659 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8"/>
+  <meta name="viewport" content="width=device-width,initial-scale=1.0"/>
+  <title>3D Lightning Audio Visualizer</title>
+  <style>
+    /* Basic styles to remove margin, hide overflow, and set background */
+    body { margin:0; overflow:hidden; background:#000; }
+    canvas { display:block; } /* Ensure canvas takes up full block space */
+    /* Styles for the title text overlay */
+    #title {
+      position:absolute;
+      top:50%;
+      width:100%;
+      text-align:center;
+      color:#ddd;
+      font-family:Arial, sans-serif;
+      font-size:24px;
+      font-weight:bold;
+      pointer-events:none; /* Allow clicks to pass through */
+      z-index:5; /* Ensure it's above the canvas */
+    }
+    /* Styles for the subtitle text overlay */
+    #subtitle {
+      position:absolute;
+      top:54%;
+      width:100%;
+      text-align:center;
+      color:#ccc;
+      font-family:Arial, sans-serif;
+      font-size:14px;
+      font-weight:bold;
+      z-index:5; /* Ensure it's above the canvas */
+    }
+    #subtitle a {
+      color:#88aaff;
+      text-decoration:none;
+    }
+    #subtitle a:hover {
+      text-decoration:underline;
+    }
+    /* Styles for the informational text overlay */
+    #info {
+      position:absolute;
+      bottom:5%;
+      width:100%;
+      text-align:center;
+      color:#aaa;
+      font-family:Arial, sans-serif;
+      font-size:14px;
+      pointer-events:none; /* Allow clicks to pass through */
+      z-index:5; /* Ensure it's above the canvas */
+    }
+    /* Styles for positioning the file input and play/pause button */
+    #audio-upload,#playPauseBtn {
+      position:absolute; top:5%; z-index:10; /* Ensure they are above other elements */
+    }
+    #audio-upload{ left:42%; }
+    #playPauseBtn{ left:55%; }
+  </style>
+  <script async src="https://unpkg.com/es-module-shims@1.8.0/dist/es-module-shims.js"></script>
+  <script type="importmap">
+  {
+    "imports": {
+      "three": "https://unpkg.com/three@0.160.0/build/three.module.js",
+      "three/addons/": "https://unpkg.com/three@0.160.0/examples/jsm/"
+    }
+  }
+  </script>
+</head>
+<body>
+  <div id="title">🎶 Upload an audio file above and press Play! 🎶</div>
+  <div id="subtitle">No audio files? Try this safe and free download of Beethoven’s 5th Symphony from
+    <a href="https://ia903403.us.archive.org/32/items/SymphonyNo.5/Ludwig_van_Beethoven_-_symphony_no._5_in_c_minor_op._67_-_i._allegro_con_brio.mp3"
+       target="_blank" rel="noopener">archive.org</a>.
+  </div>
+  <input type="file" id="audio-upload" accept=".mp3,.flac,.wav"/>
+  <button id="playPauseBtn">Play</button>
+  <div id="info">(Click and drag to move the camera. Scroll to zoom.)</div>
+
+  <script type="module">
+    // --- Module Imports ---
+    import * as THREE from 'three'; // Import the main Three.js library
+    import { OrbitControls } from 'three/addons/controls/OrbitControls.js'; // Import OrbitControls for camera manipulation
+    import { EffectComposer } from 'three/addons/postprocessing/EffectComposer.js'; // Import EffectComposer for post-processing effects
+    import { RenderPass }     from 'three/addons/postprocessing/RenderPass.js'; // Import RenderPass, needed for EffectComposer
+    import { UnrealBloomPass }from 'three/addons/postprocessing/UnrealBloomPass.js'; // Import UnrealBloomPass for a bloom effect
+
+    // --- Star Shell Function ----------------------------------------
+    /**
+     * Creates a sphere of points (stars) distributed randomly on its surface.
+     * @param {number} count - The number of stars to generate.
+     * @param {number} radius - The radius of the spherical shell.
+     * @returns {THREE.Points} A Points object representing the star shell.
+     */
+    function createStarShell(count, radius) {
+      // Create a Float32Array to store the positions (x, y, z) of each star
+      const positions = new Float32Array(count * 3);
+      for (let i = 0; i < count; i++) {
+        // Generate a random point on the surface of a unit sphere
+        // using a uniform spherical distribution method
+        const u = Math.random() * 2 - 1; // Random value between -1 and 1
+        const theta = Math.random() * Math.PI * 2; // Random angle between 0 and 2*PI
+        const sqrtOneMinusUSq = Math.sqrt(1 - u * u); // Derived from spherical coordinates math
+        const x = sqrtOneMinusUSq * Math.cos(theta);
+        const y = sqrtOneMinusUSq * Math.sin(theta);
+        const z = u;
+        // Scale the unit sphere point by the desired radius and store it
+        positions[3*i]     = x * radius;
+        positions[3*i + 1] = y * radius;
+        positions[3*i + 2] = z * radius;
+      }
+      // Create a BufferGeometry and set its position attribute
+      const geom = new THREE.BufferGeometry();
+      geom.setAttribute('position', new THREE.BufferAttribute(positions, 3));
+      // Create a PointsMaterial for the stars
+      const mat = new THREE.PointsMaterial({
+        color: 0xffffff, // White stars
+        size: 1.2,       // Base size of each star point
+        sizeAttenuation: true // Make stars smaller further away
+      });
+      // Return the Points object (geometry + material)
+      return new THREE.Points(geom, mat);
+    }
+
+    // --- Utility Functions ---
+    /**
+     * Generates a random integer between min and max (inclusive).
+     * @param {number} min - The minimum possible integer value.
+     * @param {number} max - The maximum possible integer value.
+     * @returns {number} A random integer within the specified range.
+     */
+    function randomInt(min,max){ return Math.floor(Math.random()*(max-min+1))+min; }
+
+    /**
+     * A custom Three.js Curve class that creates a path by linearly interpolating
+     * between a series of given points. Used for lightning bolt paths.
+     * @extends THREE.Curve
+     */
+    class PiecewiseLinearCurve extends THREE.Curve {
+      /**
+       * @param {THREE.Vector3[]} points - An array of Vector3 points defining the segments of the curve.
+       */
+      constructor(points){ super(); this.points=points; }
+      /**
+       * Returns a point P(t) on the curve, where t is between 0 and 1.
+       * It finds the segment corresponding to t and linearly interpolates between
+       * the start and end points of that segment.
+       * @param {number} t - A value between 0 and 1 representing the position along the curve.
+       * @returns {THREE.Vector3} The calculated point on the curve.
+       */
+      getPoint(t){
+        const pts=this.points, segs=pts.length-1;
+        // Calculate which segment t falls into and the interpolation factor within that segment
+        const s=t*segs, i=Math.floor(s), f=s-i;
+        // Handle edge case where t might be exactly 1
+        if(i>=segs) return pts[segs].clone(); // Clone the last point to avoid modification issues
+        // Linearly interpolate between the points of the current segment
+        return new THREE.Vector3().lerpVectors(pts[i], pts[i+1], f); // Create a new Vector3 for the result
+      }
+    }
+
+    // --- Scene / Camera / Renderer Setup ---
+    const scene = new THREE.Scene();
+    scene.background = new THREE.Color(0x000011);
+
+    // Create a perspective camera
+    const camera = new THREE.PerspectiveCamera(75, innerWidth/innerHeight, 0.1, 1000);
+    camera.position.set(0,20,-45);
+    camera.lookAt(0,20,0);
+
+    // Create the WebGL renderer with anti-aliasing enabled
+    const renderer = new THREE.WebGLRenderer({antialias:true});
+    renderer.setSize(innerWidth, innerHeight); // Set renderer size to window dimensions
+    document.body.appendChild(renderer.domElement); // Add the renderer's canvas to the DOM
+
+    // --- Post‑Processing Bloom Effect ---
+    // EffectComposer manages post-processing passes
+    const composer = new EffectComposer(renderer);
+    // RenderPass renders the scene itself, necessary as the first pass
+    composer.addPass(new RenderPass(scene, camera));
+    // UnrealBloomPass adds a glowing effect to bright areas
+    composer.addPass(new UnrealBloomPass(
+      new THREE.Vector2(innerWidth, innerHeight), // Resolution
+      1.2, // Strength of the bloom
+      0.4, // Radius of the bloom
+      0.85 // Threshold (how bright pixels need to be to bloom)
+    ));
+
+    // --- OrbitControls for Camera Interaction ---
+    const controls = new OrbitControls(camera, renderer.domElement);
+    controls.target.set(0,15,0);
+    controls.update();
+
+    // --- Window Resize Listener ---
+    // Adjust camera aspect ratio and renderer/composer size on window resize
+    window.addEventListener('resize', () => {
+      camera.aspect = innerWidth/innerHeight;
+      camera.updateProjectionMatrix(); // Apply aspect ratio changes
+      renderer.setSize(innerWidth, innerHeight);
+      composer.setSize(innerWidth, innerHeight);
+    });
+
+    // --- Add Star Shell Background ---
+    scene.add(createStarShell(120, 400)); // Add the distant stars
+
+    // --- Moon & Scene Lighting ---
+    // Create a sphere mesh for the moon
+    const moonMesh = new THREE.Mesh(
+      new THREE.SphereGeometry(8,32,32),
+      new THREE.MeshBasicMaterial({color:0xffffee}) // Basic material, not affected by lights
+    );
+    moonMesh.position.set(-250,250,-250); // Position the moon far away
+    scene.add(moonMesh);
+
+    // Create a directional light shining from the moon's position
+    const moonLight = new THREE.DirectionalLight(0xaaaaff, 0.5); // Bluish light, moderate intensity
+    moonLight.position.copy(moonMesh.position); // Set light position to match moon
+    scene.add(moonLight);
+
+    // Add subtle ambient light to illuminate the scene slightly
+    scene.add(new THREE.AmbientLight(0x222244, 0.3)); // Dim, dark blue ambient light
+
+    // --- Ground Plane (125×125, shaped into a parabolic bowl, with a triple gradient texture) ---
+    // Create a plane geometry with many segments for smooth deformation
+    const groundGeo = new THREE.PlaneGeometry(125,125,125,125);
+    groundGeo.rotateX(-Math.PI/2); // Rotate to lie flat on the XZ plane
+    const posAttr = groundGeo.attributes.position; // Get position attribute for direct manipulation
+    // Deform the plane into a parabolic bowl shape by modifying vertex Y coordinates
+    for(let i=0;i<posAttr.count;i++){
+      const x=posAttr.getX(i), z=posAttr.getZ(i);
+      // Parabolic formula (y = a*x^2 + b*z^2)
+      posAttr.setY(i, 0.5*((x/9)**2 + (z/12)**2));
+    }
+    groundGeo.computeVertexNormals(); // Recalculate normals for correct lighting after deformation
+
+    // Define colors for the gradient based on height
+    const c1=new THREE.Color(0x30a600), // Green (lowest)
+          c2=new THREE.Color(0xd4a96f), // Tan/Brown (middle)
+          c3=new THREE.Color(0x939393); // Grey (highest)
+    const mid1=12, mid2=15, end=25; // Height thresholds for gradient transitions
+    const cols = []; // Array to store vertex colors
+    // Calculate vertex colors based on their Y position (height)
+    for(let i=0;i<posAttr.count;i++){
+      const y=posAttr.getY(i), col=new THREE.Color();
+      if(y<=mid1) col.copy(c1); // Below mid1: Solid green
+      else if(y<=mid2) col.copy(c1).lerp(c2,(y-mid1)/(mid2-mid1)); // Between mid1 and mid2: Green to Tan
+      else if(y<=end) col.copy(c2).lerp(c3,(y-mid2)/(end-mid2)); // Between mid2 and end: Tan to Grey
+      else col.copy(c3); // Above end: Solid grey
+      cols.push(col.r,col.g,col.b); // Add RGB components to the color array
+    }
+    // Set the 'color' attribute on the geometry for vertex coloring
+    groundGeo.setAttribute('color', new THREE.Float32BufferAttribute(cols,3));
+    // Create a material that uses vertex colors and responds to lights
+    const groundMat = new THREE.MeshStandardMaterial({ vertexColors:true });
+    scene.add(new THREE.Mesh(groundGeo, groundMat));
+
+    // --- Trees (placed between ground height y=3 and y=12) ---
+    const treeGeo = new THREE.ConeGeometry(0.3,1,8); // Simple cone geometry for trees
+    const treeMat = new THREE.MeshStandardMaterial({color:0x227600}); // Dark green material
+    let tPl=0, tAt=0; // Counters for trees placed (tPl) and attempts (tAt)
+    const maxTrees = 100; // Target number of trees
+    const maxTreeAttempts = 500; // Limit attempts to prevent infinite loops
+    // Attempt to place trees randomly within the specified height range
+    while(tPl<maxTrees && tAt<maxTreeAttempts){ 
+      tAt++;
+      // Generate random X, Z coordinates within the ground plane bounds
+      const x=THREE.MathUtils.randFloatSpread(125),
+            z=THREE.MathUtils.randFloatSpread(125);
+      // Calculate the ground height (Y) at this X, Z using the same parabolic formula
+      const y=0.5*((x/9)**2 + (z/12)**2);
+      // Check if the height is within the desired range for trees (lower, grassy area, y=3 to y=mid1=12)
+      if(y>=3 && y<=mid1){
+        const tree=new THREE.Mesh(treeGeo,treeMat);
+        // Position cone on the ground (y + half cone height)
+        tree.position.set(x,y+0.5,z);
+        tree.rotation.y=Math.random()*Math.PI*2; // Randomize rotation
+        scene.add(tree);
+        tPl++; // Increment placed count
+      }
+    }
+
+    // --- Boulders (placed between ground height y=15 and y=20) ---
+    const bGeo=new THREE.SphereGeometry(0.4,8,6); // Low-poly sphere geometry for boulders
+    let bPl=0, bAt=0; // Counters for boulders placed (bPl) and attempts (bAt)
+    const maxBoulders = 100; // Target number of boulders
+    const maxBoulderAttempts = 300; // Limit attempts
+    // Attempt to place boulders randomly within the specified height range
+    while(bPl<maxBoulders && bAt<maxBoulderAttempts){ 
+      bAt++;
+      // Generate random X, Z coordinates
+      const x=THREE.MathUtils.randFloatSpread(125),
+            z=THREE.MathUtils.randFloatSpread(125);
+      // Calculate the ground height (Y) at this X, Z
+      const y=0.5*((x/9)**2 + (z/12)**2);
+      // Check if the height is within the desired range for boulders (higher, rocky area, y=mid2=15 to y=20)
+      if(y>=mid2 && y<=20){
+        // Determine boulder color based on height, blending from tan (c2) to grey (c3)
+        const t=THREE.MathUtils.clamp((y-mid2)/(end-mid2),0,1); // Interpolation factor within the rocky range
+        const col=new THREE.Color().copy(c2).lerp(c3,t); // Calculate color
+        const rockMat=new THREE.MeshStandardMaterial({color:col}); // Material with calculated color
+        const rock=new THREE.Mesh(bGeo,rockMat);
+        const s=randomInt(5,12)/10; // Scale factor between 0.5 and 1.2
+        rock.scale.set(s,s,s);
+        // Position boulder on the ground (y + scaled radius approximation)
+        rock.position.set(x,y+s*0.4,z); // Use 0.4 as original radius
+        rock.rotation.y=Math.random()*Math.PI*2; // Randomize rotation
+        scene.add(rock);
+        bPl++; // Increment placed count
+      }
+    }
+
+    // --- Cloud (constructed from multiple geometric shapes, color #222244) ---
+    // Material used for all cloud parts
+    const cloudMat=new THREE.MeshStandardMaterial({color:0x222244,flatShading:true});
+    // Cloud Part 1: Lower frustum (cone-like shape) + bottom cap
+    {
+      const pts=[], segs=32;
+      // Define the profile curve for the lathe geometry (lower part)
+      for(let i=0;i<=segs;i++){
+        const t=i/segs; // Interpolation factor (0 to 1)
+        const y=27.5+12*t; // Y position from 27.5 up to 39.5
+        // Radius changes quadratically from 20 down to 13
+        pts.push(new THREE.Vector2(20+(13-20)*(t*t), y));
+      }
+      // Create the lower frustum using LatheGeometry (revolving the profile)
+      scene.add(new THREE.Mesh(new THREE.LatheGeometry(pts,64), cloudMat));
+      // Create a circular cap for the bottom of the frustum
+      const cap=new THREE.Mesh(
+        new THREE.CircleGeometry(20,64), // Radius matches the starting radius of the lathe
+        new THREE.MeshStandardMaterial({color:0x222244,side:THREE.DoubleSide}) // Double side needed for cap
+      );
+      cap.rotation.x=-Math.PI/2; cap.position.y=27.5; // Position at the bottom of the lower frustum
+      scene.add(cap);
+    }
+    // Cloud Part 2: Middle cylinder
+    {
+      const cyl=new THREE.Mesh(
+        new THREE.CylinderGeometry(13,13,15,64), // Radius matches ends of frustums, height 15
+        cloudMat
+      );
+      cyl.position.y=47; // Positioned between the two frustums (y=39.5 to y=54.5)
+      scene.add(cyl);
+    }
+    // Cloud Part 3: Upper frustum (inverted cone-like shape, concave) + top cap
+    {
+      const pts=[], segs=32;
+      // Define the profile curve for the lathe geometry (upper part)
+      for(let i=0;i<=segs;i++){
+        const t=i/segs; // Interpolation factor (0 to 1)
+        const y=50+10*t; // Y position from 50 up to 60
+        // Radius changes from 13 to 24 with negative (concave) curvature
+        pts.push(new THREE.Vector2(-13+(24-(-13))*(-t*t), y));
+      }
+      // Create the upper frustum using LatheGeometry
+      scene.add(new THREE.Mesh(new THREE.LatheGeometry(pts,64), cloudMat));
+      // Create a circular cap for the top of the frustum
+      const cap2=new THREE.Mesh(
+        new THREE.CircleGeometry(24,64), // Radius intended for the top
+        new THREE.MeshStandardMaterial({color:0x222244,side:THREE.DoubleSide})
+      );
+      cap2.rotation.x=-Math.PI/2; cap2.position.y=60; // Position at the top of the upper frustum
+      scene.add(cap2);
+    }
+
+    // --- Charge Field (Internal representation for guiding lightning) ---
+    // Array to store charge particles {position, force, used, originalPosition}
+    const charges=[];
+    // Parameters for distributing charges in layers
+    const layers=4, gIdx=4, topY=25, botY=2, h=(topY-botY)/layers;
+    // Settings: number of charges and their attractive force per layer
+    const settings=[
+      {count:150,force:1}, {count:275,force:2}, // Layers 0, 1
+      {count:420,force:4}, {count:725,force:8}, // Layers 2, 3
+      {count:1000,force:16} // Layer 4 (ground layer)
+    ];
+    // Create charges within the cloud volume (layers 0 to 3)
+    for(let i=0;i<layers;i++){
+      const tT=topY-i*h, tB=topY-(i+1)*h; // Layer top/bottom Y (using tT, tB)
+      for(let j=0;j<settings[i].count;j++){
+        const y=THREE.MathUtils.lerp(tT,tB,Math.random()); // Random Y within layer
+        // Calculate radius at this height (interpolating between 14 at topY and 21 at y=0)
+        const t=(topY-y)/topY, rad=14+t*(21-14);
+        // Random angle and distance within the radius (sqrt for uniform distribution)
+        const ang=Math.random()*Math.PI*2, r=Math.sqrt(Math.random())*rad;
+        charges.push({position:new THREE.Vector3(r*Math.cos(ang),y,r*Math.sin(ang)),force:settings[i].force,used:false});
+      }
+    }
+    // Create charges near the ground (using settings for groundLayerIndex gIdx)
+    {
+      const tT=2, tB=0; // Ground layer Y range (0 to 2)
+      const i=gIdx; // Use settings[gIdx]
+      for(let j=0;j<settings[i].count;j++){
+        const y=THREE.MathUtils.lerp(tT,tB,Math.random()); // Random Y
+        const t=(topY-y)/topY, rad=14+t*(21-14); // Calculate radius as before
+        const ang=Math.random()*Math.PI*2, r=Math.sqrt(Math.random())*rad; // Random position within radius
+        charges.push({position:new THREE.Vector3(r*Math.cos(ang),y,r*Math.sin(ang)),force:settings[i].force,used:false});
+      }
+    }
+    // Store the initial position of each charge particle for resetting later
+    charges.forEach(c=>c.originalPosition=c.position.clone());
+
+    // --- Audio & Lightning Setup ---
+    // Web Audio API variables
+    let audioContext, analyser, audioSource, audioElement;
+    // Audio data and state variables
+    let audioDataArray, isAudioPlaying=false, prevSpec=null;
+    // Spectral flux parameters and lightning state
+    const fluxThreshold=100; // Threshold for spectral flux change to trigger lightning
+    const bolts=[]; // Array to hold active lightning bolt meshes and data {mesh, startTime}
+    const boltLifetime=300; // How long bolts stay visible (milliseconds)
+    // Lightning growth parameters
+    const segLen=1; // Length of each lightning segment
+    const infRad=6.5; // Radius of influence to attract charges
+    const killDist=1; // Distance at which a charge is considered 'used' by a bolt tip
+    const forkAng=20; // Maximum angle change (degrees) before a primary branch might fork
+
+    // Get references to UI elements
+    const titleEl=document.getElementById('title');
+    const subtitleEl=document.getElementById('subtitle');
+    const playPauseBtnEl = document.getElementById('playPauseBtn');
+
+    // --- Event Listener for Play/Pause Button ---
+    playPauseBtnEl.addEventListener('click',()=>{ // Use stored element ref playPauseBtnEl
+      if(!audioElement) return; // Do nothing if no audio is loaded
+      // Hide instructions when playing starts for the first time
+      if(!isAudioPlaying){
+        titleEl.style.display='none';
+        subtitleEl.style.display='none';
+      }
+      // Toggle play/pause state
+      if(isAudioPlaying){
+        audioElement.pause();
+        isAudioPlaying=false;
+        playPauseBtnEl.textContent='Play'; // Update button text using playPauseBtnEl
+      } else {
+        // Resume AudioContext if it was suspended
+        if(audioContext?.state==='suspended') audioContext.resume();
+        audioElement.play();
+        isAudioPlaying=true;
+        playPauseBtnEl.textContent='Pause'; // Update button text
+      }
+    });
+
+    // --- Event Listener for Audio File Upload ---
+    document.getElementById('audio-upload').addEventListener('change',e=>{
+      const f=e.target.files[0]; // Get the selected file
+      if(!f) return; // Do nothing if no file selected
+
+      // If an audio element already exists, pause and clear its source
+      if(audioElement){
+          audioElement.pause();
+          audioElement.src='';
+          isAudioPlaying = false; // Reset playing state
+          playPauseBtnEl.textContent = 'Play'; // Reset button text
+      }
+      // Create a new Audio element with the uploaded file
+      audioElement=new Audio(URL.createObjectURL(f));
+      audioElement.crossOrigin='anonymous'; // Needed for analyser with local files in some setups
+      audioElement.loop=false; // Don't loop the audio
+
+      // Initialize AudioContext if it doesn't exist
+      // Use webkit prefix for older Safari compatibility
+      if(!audioContext) audioContext=new (window.AudioContext||window.webkitAudioContext)();
+
+      // Disconnect previous source if it exists
+      if(audioSource) audioSource.disconnect();
+
+      // Create audio graph: AudioElement -> MediaElementSource -> Analyser -> Destination
+      audioSource=audioContext.createMediaElementSource(audioElement);
+      analyser=audioContext.createAnalyser();
+      analyser.fftSize=256; // FFT size for frequency analysis (power of 2)
+      // Array to hold frequency data (half the fftSize)
+      audioDataArray=new Uint8Array(analyser.frequencyBinCount);
+      // Connect the nodes
+      audioSource.connect(analyser);
+      analyser.connect(audioContext.destination); // Connect analyser to output
+
+      // Reset spectral flux comparison array
+      prevSpec = null;
+    });
+
+    /**
+     * Simulates the growth of a lightning branch (primary, secondary, or tertiary).
+     * The branch grows segment by segment, attracted towards unused charge particles.
+     * Creates and adds a TubeGeometry mesh representing the branch to the scene.
+     * @param {object} start - The starting node {pos: THREE.Vector3, secondarySpawned: boolean, tertiarySpawned: boolean}.
+     * @param {'primary'|'secondary'|'tertiary'} type - The type of branch, affecting appearance and behavior.
+     * @param {number} maxN - The maximum number of segments (nodes) the branch can have.
+     */
+    function growBranch(start,type,maxN){
+      const nodes=[start]; // Array to store the points (nodes) of the branch path {pos, secondarySpawned, tertiarySpawned}
+      let cur=start; // The current node being extended
+      let prevDir=new THREE.Vector3(0,-1,0); // Initial downward direction
+      // Grow the branch node by node, up to maxN segments
+      for(let i=0;i<maxN;i++){
+        // Find nearby unused charges within the influence radius
+        const at=charges.filter(c=>!c.used&&cur.pos.distanceTo(c.position)<infRad);
+        // Stop growing if no charges are nearby
+        if(!at.length) break;
+        // Calculate the cumulative attraction force vector
+        const cum=new THREE.Vector3();
+        at.forEach(c=>cum.add(
+          new THREE.Vector3().subVectors(c.position,cur.pos) // Vector from node to charge
+            .normalize() // Direction only
+            .multiplyScalar(c.force) // Weighted by charge force
+        ));
+        // Stop if the cumulative force is zero
+        if(!cum.length()) break;
+        cum.normalize(); // Get the overall direction of attraction
+
+        // Give secondary branches a slight horizontal bias
+        if(type==='secondary'){ cum.y=-0.3; cum.normalize(); } // Add downward component and renormalize
+
+        // Check for potential forking based on angle change
+        const ang=prevDir.angleTo(cum)*(180/Math.PI); // Angle change in degrees
+
+        // Primary branches can spawn secondary branches if angle changes sharply enough
+        if(type==='primary'&&ang>forkAng&&!cur.secondarySpawned){ 
+          cur.secondarySpawned=true; // Mark as spawned to prevent multiple forks from one node
+          // Start a new secondary branch from the current position
+          growBranch({pos:cur.pos.clone(),secondarySpawned:false,tertiarySpawned:false},
+                     'secondary',randomInt(4,8)); // Secondary branches grow between 4-8 segments
+        }
+        // Secondary branches can spawn tertiary branches at, specifically, nodes 3 and 6
+        if(type==='secondary'&&([3,6].includes(nodes.length))&&!cur.tertiarySpawned){
+          cur.tertiarySpawned=true; // Mark as spawned
+          // Start a new tertiary branch
+          growBranch({pos:cur.pos.clone(),secondarySpawned:false,tertiarySpawned:false},
+                     'tertiary',randomInt(2,4)); // Tertiary branches grow between 2-4 segments
+        }
+        // Calculate the position of the next node along the calculated direction
+        const next=cur.pos.clone().addScaledVector(cum,segLen);
+        // Add the new node to the path
+        nodes.push({pos:next,secondarySpawned:false,tertiarySpawned:false});
+        // Mark charges near the new node tip as 'used'
+        at.forEach(c=>{ if(next.distanceTo(c.position)<killDist) c.used=true; });
+        // Update direction and current node for the next iteration
+        prevDir.copy(cum);
+        cur=nodes[nodes.length-1];
+        // Stop growing if the branch reaches a ground layer charge (y < 2)
+        if(cur.pos.y<2) break;
+      }
+      // Create the visual representation of the branch if it has enough nodes
+      if (nodes.length > 1) { // Ensure there's at least one segment
+        const pts=nodes.map(n=>n.pos); // Extract Vector3 positions
+        const curve=new PiecewiseLinearCurve(pts); // Create the custom curve
+
+        // Determine radius and material based on branch type
+        let rad=0.02; // Default (tertiary)
+        const mat=new THREE.MeshStandardMaterial({ 
+          color:0xafffff,       // Light cyan color
+          emissive:0xafffff,    // Emissive (glows)
+          transparent:true,     // Enable transparency for fading
+          opacity:1             // Start fully opaque
+        });
+        // Set emissive intensity based on type (primary brightest)
+        mat.emissiveIntensity={primary:2,secondary:1,tertiary:0.5}[type];
+        if(type==='primary') rad=0.08;
+        else if(type==='secondary') rad=0.04;
+
+        // Create the tube geometry along the curve
+        const geo=new THREE.TubeGeometry(curve,Math.max(pts.length*10,20),rad,8,false);
+        const mesh=new THREE.Mesh(geo,mat);
+        scene.add(mesh);
+
+        // Store the bolt mesh and its start time for fading/removal
+        bolts.push({mesh,startTime:performance.now()});
+      }
+    }
+
+    /**
+     * Initiates the creation of a new lightning bolt, starting from a random
+     * point near the bottom of the cloud volume (y=27.5).
+     */
+    function createLightningBolt(){
+      // Choose a random starting X, Z position within the cloud's base radius
+      const x=THREE.MathUtils.randFloat(-14,14),
+            z=THREE.MathUtils.randFloat(-14,14);
+      // Start growing a primary branch from this point
+      growBranch({pos:new THREE.Vector3(x,27.5,z),secondarySpawned:false,tertiarySpawned:false},
+                 'primary',100); // Maximum nodes/length for a primary branch
+    }
+
+    /**
+     * The main animation loop. Called recursively via requestAnimationFrame.
+     * Updates audio analysis, triggers lightning, manages bolt lifetimes,
+     * updates controls, and renders the scene.
+     */
+    function animate(){
+      requestAnimationFrame(animate); // Schedule the next frame
+
+      // --- Audio Analysis and Lightning Trigger ---
+      if(isAudioPlaying&&analyser){
+        analyser.getByteFrequencyData(audioDataArray); // Get current frequency data
+        // Calculate spectral flux (change in frequency amplitudes)
+        if(!prevSpec) { // If this is the first frame with data
+            prevSpec=audioDataArray.slice(); // Store first frame data
+        } else {
+          let flux=0;
+          // Sum positive differences between current and previous frame's frequency data
+          for(let i=0;i<audioDataArray.length;i++){
+            const d=audioDataArray[i]-prevSpec[i];
+            if(d>0) flux+=d;
+          }
+          prevSpec=audioDataArray.slice(); // Update previous spectrum for next frame
+          // If flux exceeds threshold, create a lightning bolt
+          if(flux>fluxThreshold) createLightningBolt();
+        }
+      }
+
+      // --- Lightning Bolt Lifetime Management ---
+      const now=performance.now(); // Get current time
+      // Iterate backwards through bolts array for safe removal while iterating
+      for(let i=bolts.length-1;i>=0;i--){
+        const b=bolts[i]; // Current bolt object {mesh, startTime}
+        const elapsed=now-b.startTime; // Time since bolt was created
+        const t=1-elapsed/boltLifetime; // Life fraction (1 = new, 0 = expired)
+
+        if(elapsed>boltLifetime){ 
+          // Bolt has expired: remove mesh from scene and data from array
+          scene.remove(b.mesh);
+          // Dispose geometry and material to free GPU memory
+          b.mesh.geometry.dispose();
+          b.mesh.material.dispose();
+          bolts.splice(i,1); // Remove from bolts array
+
+          // Reset any charges that were marked as 'used'
+          charges.forEach(c=>{
+            if(c.used){
+              c.used=false;
+              // Reset position to initial position plus a small random offset
+              c.position.copy(c.originalPosition).add(
+                new THREE.Vector3(
+                  THREE.MathUtils.randFloatSpread(3),
+                  THREE.MathUtils.randFloatSpread(3),
+                  THREE.MathUtils.randFloatSpread(3)
+                )
+              );
+            }
+          });
+        } else {
+          // Bolt is still active: update its opacity for fade-out effect
+          b.mesh.material.opacity=THREE.MathUtils.clamp(t,0,1);
+        }
+      }
+
+      // Update camera controls
+      controls.update();
+
+      // Render the scene through the EffectComposer (applies post-processing like bloom)
+      composer.render();
+    }
+    // --- Start Animation Loop ---
+    animate();
+  </script>
+</body>
+</html>
