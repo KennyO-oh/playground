@@ -24,7 +24,7 @@
     /* Styles for the subtitle text overlay */
     #subtitle {
       position:absolute;
-      top:54%;
+      top:60%;
       width:100%;
       text-align:center;
       color:#ccc;
@@ -645,6 +645,9 @@
           b.mesh.material.opacity=THREE.MathUtils.clamp(t,0,1);
         }
       }
+
+      // Update camera controls
+      controls.update();
 
       // Render the scene through the EffectComposer (applies post-processing like bloom)
       composer.render();
