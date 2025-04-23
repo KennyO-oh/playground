@@ -1,6 +1,6 @@
 # Welcome to my simulation coding hub!<br><br>
 ## The https://github.com/kenny-oh/playground repository hosts my entire mixture of HTML and Python scripts.<br><br>
-### For the HTML files, all you have to do is go to your address bar and plug in the file name at the end of <code>https://kennyo-oh.github.io/playground/</code>...
+### For the HTML files, all you have to do is go to your address bar and plug in the file name at the end of `https://kennyo-oh.github.io/playground/`...
 - For example: https://kennyo-oh.github.io/playground/t-cflow.html
 ### For the Python files, you will need an IDE (Integrated Development Environment).
 - PyCharm (https://www.jetbrains.com/pycharm/) is what I use.
